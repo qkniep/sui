@@ -33,7 +33,7 @@ pub const TOTAL_SUPPLY_MIST: u64 = TOTAL_SUPPLY_SUI * MIST_PER_SUI;
 pub const GAS_MODULE_NAME: &IdentStr = ident_str!("sui");
 pub const GAS_STRUCT_NAME: &IdentStr = ident_str!("SUI");
 
-sui_macros::checked_arithmetic! {
+// sui_macros::checked_arithmetic! {
 
 pub struct GAS {}
 impl GAS {
@@ -151,4 +151,4 @@ impl Display for GasCoin {
     }
 }
 
-}
+// }

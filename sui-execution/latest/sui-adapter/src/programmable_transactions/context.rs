@@ -19,6 +19,7 @@ use move_vm_runtime::{move_vm::MoveVM, session::Session};
 use move_vm_types::loaded_data::runtime_types::Type;
 use sui_move_natives::object_runtime::{max_event_error, ObjectRuntime, RuntimeResults};
 use sui_protocol_config::ProtocolConfig;
+use sui_types::gas::GasCharger;
 use sui_types::{
     balance::Balance,
     base_types::{MoveObjectType, ObjectID, SequenceNumber, SuiAddress, TxContext},
@@ -28,7 +29,6 @@ use sui_types::{
         ExecutionResults, ExecutionState, InputObjectMetadata, InputValue, ObjectValue,
         RawValueType, ResultValue, UsageKind,
     },
-    gas::{SuiGasStatus, SuiGasStatusAPI},
     metrics::LimitsMetrics,
     move_package::MovePackage,
     object::{Data, MoveObject, Object, Owner},
@@ -50,7 +50,7 @@ use crate::adapter::{missing_unwrapped_msg, new_native_extensions};
 
 use super::linkage_view::{LinkageInfo, LinkageView, SavedLinkage};
 
-sui_macros::checked_arithmetic! {
+// sui_macros::checked_arithmetic! {
 
 /// Maintains all runtime state specific to programmable transactions
 pub struct ExecutionContext<'vm, 'state, 'a> {
@@ -65,8 +65,8 @@ pub struct ExecutionContext<'vm, 'state, 'a> {
     /// A shared transaction context, contains transaction digest information and manages the
     /// creation of new object IDs
     pub tx_context: &'a mut TxContext,
-    /// The gas status used for metering
-    pub gas_status: &'a mut SuiGasStatus,
+    /// The gas charger used for metering
+    pub gas_charger: &'a mut GasCharger,
     /// The session used for interacting with Move types and calls
     pub session: Session<'state, 'vm, LinkageView<'state>>,
     /// Additional transfers not from the Move runtime
@@ -108,8 +108,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
         vm: &'vm MoveVM,
         state_view: &'state dyn ExecutionState,
         tx_context: &'a mut TxContext,
-        gas_status: &'a mut SuiGasStatus,
-        gas_coin_opt: Option<ObjectID>,
+        gas_charger: &'a mut GasCharger,
         inputs: Vec<CallArg>,
     ) -> Result<Self, ExecutionError> {
         let init_linkage = if protocol_config.package_upgrades_supported() {
@@ -126,7 +125,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             linkage,
             state_view.as_child_resolver(),
             BTreeMap::new(),
-            !gas_status.is_unmetered(),
+            !gas_charger.is_unmetered(),
             protocol_config,
             metrics.clone(),
         );
@@ -143,7 +142,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
                 )
             })
             .collect::<Result<_, ExecutionError>>()?;
-        let gas = if let Some(gas_coin) = gas_coin_opt {
+        let gas = if let Some(gas_coin) = gas_charger.gas_coin() {
             let mut gas = load_object(
                 vm,
                 state_view,
@@ -161,7 +160,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             })) = &mut gas.inner.value else {
                 invariant_violation!("Gas object should be a populated coin")
             };
-            let max_gas_in_balance = gas_status.gas_budget();
+            let max_gas_in_balance = gas_charger.gas_budget();
             let Some(new_balance) = coin.balance.value().checked_sub(max_gas_in_balance) else {
                 invariant_violation!(
                     "Transaction input checker should check that there is enough gas"
@@ -191,7 +190,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             linkage,
             state_view.as_child_resolver(),
             object_owner_map,
-            !gas_status.is_unmetered(),
+            !gas_charger.is_unmetered(),
             protocol_config,
             metrics.clone(),
         );
@@ -201,7 +200,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             vm,
             state_view,
             tx_context,
-            gas_status,
+            gas_charger,
             session,
             gas,
             inputs,
@@ -533,7 +532,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             vm,
             state_view,
             tx_context,
-            gas_status,
+            gas_charger,
             session,
             additional_transfers,
             new_packages,
@@ -630,7 +629,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
         }
         // Refund unused gas
         if let Some(gas_id) = gas_id_opt {
-            refund_max_gas_budget(&mut additional_writes, gas_status, gas_id)?;
+            refund_max_gas_budget(&mut additional_writes, gas_charger, gas_id)?;
         }
 
         let (res, linkage) = session.finish_with_extensions();
@@ -670,7 +669,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
             linkage,
             state_view.as_child_resolver(),
             BTreeMap::new(),
-            !gas_status.is_unmetered(),
+            !gas_charger.is_unmetered(),
             protocol_config,
             metrics,
         );
@@ -772,7 +771,7 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
                     } else {
                         DeleteKindWithOldVersion::Wrap(old_version)
                     }
-                },
+                }
                 DeleteKind::UnwrapThenDelete => {
                     if protocol_config.simplified_unwrap_then_delete() {
                         DeleteKindWithOldVersion::UnwrapThenDelete
@@ -1219,7 +1218,7 @@ fn add_additional_write(
 /// now we return exactly that amount. Gas will be charged by the execution engine
 fn refund_max_gas_budget(
     additional_writes: &mut BTreeMap<ObjectID, AdditionalWrite>,
-    gas_status: &SuiGasStatus,
+    gas_charger: &mut GasCharger,
     gas_id: ObjectID,
 ) -> Result<(), ExecutionError> {
     let Some(AdditionalWrite { bytes,.. }) = additional_writes.get_mut(&gas_id) else {
@@ -1231,7 +1230,7 @@ fn refund_max_gas_budget(
     let Some(new_balance) = coin
         .balance
         .value()
-        .checked_add(gas_status.gas_budget()) else {
+        .checked_add(gas_charger.gas_budget()) else {
             return Err(ExecutionError::new_with_source(
                 ExecutionErrorKind::CoinBalanceOverflow,
                 "Gas coin too large after returning the max gas budget",
@@ -1296,4 +1295,4 @@ unsafe fn create_written_object<'vm, 'state>(
     )
 }
 
-}
+// }
