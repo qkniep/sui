@@ -5,6 +5,7 @@
 
 
 
+-  [Struct `Receiving`](#0x2_transfer_Receiving)
 -  [Constants](#@Constants_0)
 -  [Function `transfer`](#0x2_transfer_transfer)
 -  [Function `public_transfer`](#0x2_transfer_public_transfer)
@@ -12,14 +13,50 @@
 -  [Function `public_freeze_object`](#0x2_transfer_public_freeze_object)
 -  [Function `share_object`](#0x2_transfer_share_object)
 -  [Function `public_share_object`](#0x2_transfer_public_share_object)
+-  [Function `receive`](#0x2_transfer_receive)
 -  [Function `freeze_object_impl`](#0x2_transfer_freeze_object_impl)
 -  [Function `share_object_impl`](#0x2_transfer_share_object_impl)
 -  [Function `transfer_impl`](#0x2_transfer_transfer_impl)
+-  [Function `receive_internal`](#0x2_transfer_receive_internal)
 
 
-<pre><code></code></pre>
+<pre><code><b>use</b> <a href="object.md#0x2_object">0x2::object</a>;
+</code></pre>
 
 
+
+<a name="0x2_transfer_Receiving"></a>
+
+## Struct `Receiving`
+
+
+
+<pre><code><b>struct</b> <a href="transfer.md#0x2_transfer_Receiving">Receiving</a>&lt;T: key&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>id: <a href="object.md#0x2_object_ID">object::ID</a></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>version: u64</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
 
 <a name="@Constants_0"></a>
 
@@ -213,6 +250,37 @@ The object must have <code>store</code> to be shared outside of its module.
 
 </details>
 
+<a name="0x2_transfer_receive"></a>
+
+## Function `receive`
+
+Given mutable (i.e., locked) access to the <code>parent</code> and a <code><a href="transfer.md#0x2_transfer_Receiving">Receiving</a></code>
+object referencing an object owned by <code>parent</code> discharge the <code><a href="transfer.md#0x2_transfer_Receiving">Receiving</a></code> obligation
+and return the corresponding owned object.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="transfer.md#0x2_transfer_receive">receive</a>&lt;T: key&gt;(parent: &<b>mut</b> <a href="object.md#0x2_object_UID">object::UID</a>, to_receive: <a href="transfer.md#0x2_transfer_Receiving">transfer::Receiving</a>&lt;T&gt;): T
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="transfer.md#0x2_transfer_receive">receive</a>&lt;T: key&gt;(parent: &<b>mut</b> <a href="object.md#0x2_object_UID">object::UID</a>, to_receive: <a href="transfer.md#0x2_transfer_Receiving">Receiving</a>&lt;T&gt;): T {
+    <b>let</b> <a href="transfer.md#0x2_transfer_Receiving">Receiving</a> {
+        id,
+        version: _,
+    } = to_receive;
+    <a href="transfer.md#0x2_transfer_receive_internal">receive_internal</a>(<a href="object.md#0x2_object_uid_to_address">object::uid_to_address</a>(parent), id)
+}
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_transfer_freeze_object_impl"></a>
 
 ## Function `freeze_object_impl`
@@ -322,6 +390,28 @@ The object must have <code>store</code> to be shared outside of its module.
 <b>ensures</b> [abstract] <b>exists</b>&lt;<a href="object.md#0x2_object_Ownership">object::Ownership</a>&gt;(<a href="object.md#0x2_object_id">object::id</a>(obj).bytes);
 <b>ensures</b> [abstract] <b>global</b>&lt;<a href="object.md#0x2_object_Ownership">object::Ownership</a>&gt;(<a href="object.md#0x2_object_id">object::id</a>(obj).bytes).owner == recipient;
 <b>ensures</b> [abstract] <b>global</b>&lt;<a href="object.md#0x2_object_Ownership">object::Ownership</a>&gt;(<a href="object.md#0x2_object_id">object::id</a>(obj).bytes).status == <a href="prover.md#0x2_prover_OWNED">prover::OWNED</a>;
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_transfer_receive_internal"></a>
+
+## Function `receive_internal`
+
+
+
+<pre><code><b>fun</b> <a href="transfer.md#0x2_transfer_receive_internal">receive_internal</a>&lt;T: key&gt;(parent: <b>address</b>, to_receive: <a href="object.md#0x2_object_ID">object::ID</a>): T
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>native</b> <b>fun</b> <a href="transfer.md#0x2_transfer_receive_internal">receive_internal</a>&lt;T: key&gt;(parent: <b>address</b>, to_receive: <a href="object.md#0x2_object_ID">object::ID</a>): T;
 </code></pre>
 
 

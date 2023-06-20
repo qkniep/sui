@@ -28,6 +28,7 @@ pub const PRIVATE_TRANSFER_FUNCTIONS: &[&IdentStr] = &[
     ident_str!("transfer"),
     ident_str!("freeze_object"),
     ident_str!("share_object"),
+    ident_str!("receive"),
 ];
 pub const TRANSFER_IMPL_FUNCTIONS: &[&IdentStr] = &[
     ident_str!("transfer_impl"),

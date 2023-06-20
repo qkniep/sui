@@ -48,6 +48,7 @@ use sui_types::{
     },
     storage::get_packages,
     transaction::{Argument, Command, ProgrammableMoveCall, ProgrammableTransaction},
+    transfer::{Receiving, RESOLVED_RECEIVING_STRUCT},
     Identifier, SUI_FRAMEWORK_ADDRESS,
 };
 use sui_types::{
@@ -1323,7 +1324,7 @@ fn check_param_type<Mode: ExecutionMode>(
     param_ty: &Type,
 ) -> Result<(), ExecutionError>
 {
-    let ty = match value {
+    match value {
         // For dev-spect, allow any BCS bytes. This does mean internal invariants for types can
         // be violated (like for string or Option)
         Value::Raw(RawValueType::Any, _) if Mode::allow_arbitrary_values() => return Ok(()),
@@ -1353,18 +1354,37 @@ fn check_param_type<Mode: ExecutionMode>(
                 Mode::allow_arbitrary_values() || !abilities.has_key(),
                 "Raw value should never be an object"
             );
-            ty
+                if ty != param_ty {
+                    return Err(command_argument_error(
+                            CommandArgumentError::TypeMismatch,
+                            idx,
+                    ))
+                }
         }
-        Value::Object(obj) => &obj.type_,
-    };
-    if ty != param_ty {
-        Err(command_argument_error(
-            CommandArgumentError::TypeMismatch,
-            idx,
-        ))
-    } else {
-        Ok(())
+        Value::Object(obj) =>  {
+            let ty = &obj.type_;
+            if ty != param_ty {
+                return Err(command_argument_error(
+                        CommandArgumentError::TypeMismatch,
+                        idx,
+                ))
+            }
+        }
+        Value::Receiving(_, _) =>  {
+            if let Type::StructInstantiation(idx, targs) = param_ty {
+                let Some(s) = context
+                    .session
+                    .get_struct_type(*idx) else {
+                        invariant_violation!("Loaded struct not found")
+                    };
+                let resolved_struct = get_struct_ident(&s);
+                if resolved_struct == RESOLVED_RECEIVING_STRUCT && targs.len() == 1 {
+                    return Ok(())
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 fn get_struct_ident(s: &StructType) -> (&AccountAddress, &IdentStr, &IdentStr) {

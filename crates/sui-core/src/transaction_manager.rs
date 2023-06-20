@@ -472,6 +472,19 @@ impl TransactionManager {
                 for key in input_object_locks.keys() {
                     object_availability.insert(*key, None);
                 }
+
+                // Register receiving objects as dependencies, but don't register them as objects that
+                // need to be locked.
+                let receiving_object_entries = cert
+                    .data()
+                    .intent_message()
+                    .value
+                    .receiving_objects()
+                    .expect("receiving_objects() cannot fail");
+                for entry in receiving_object_entries {
+                    let key = InputKey(entry.0, Some(entry.1));
+                    object_availability.insert(key, None);
+                }
                 (cert, fx_digest, input_object_locks)
             })
             .collect();

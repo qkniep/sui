@@ -8,7 +8,7 @@ use crate::{
     error::{SuiError, SuiResult},
     object::{Object, Owner},
     storage::{
-        BackingPackageStore, ChildObjectResolver, DeleteKind, ObjectStore, ParentSync, WriteKind,
+        BackingPackageStore, DeleteKind, ObjectStore, ParentSync, RuntimeObjectResolver, WriteKind,
     },
 };
 use move_binary_format::CompiledModule;
@@ -32,17 +32,16 @@ impl BackingPackageStore for InMemoryStorage {
     }
 }
 
-impl ChildObjectResolver for InMemoryStorage {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
+impl RuntimeObjectResolver for InMemoryStorage {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
         let child_object = match self.persistent.get(child).cloned() {
             None => return Ok(None),
             Some(obj) => obj,
         };
-        let parent = *parent;
-        if child_object.owner != Owner::ObjectOwner(parent.into()) {
+        if child_object.owner != owner {
             return Err(SuiError::InvalidChildObjectAccess {
                 object: *child,
-                given_parent: parent,
+                given_parent: owner.get_owner_address()?.into(),
                 actual_owner: child_object.owner,
             });
         }

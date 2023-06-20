@@ -21,7 +21,7 @@ use sui_move_natives::object_runtime::{max_event_error, ObjectRuntime, RuntimeRe
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
     balance::Balance,
-    base_types::{MoveObjectType, ObjectID, SequenceNumber, SuiAddress, TxContext},
+    base_types::{MoveObjectType, ObjectID, ObjectRef, SequenceNumber, SuiAddress, TxContext},
     coin::Coin,
     error::{ExecutionError, ExecutionErrorKind},
     execution::{
@@ -33,8 +33,8 @@ use sui_types::{
     move_package::MovePackage,
     object::{Data, MoveObject, Object, Owner},
     storage::{
-        BackingPackageStore, ChildObjectResolver, DeleteKind, DeleteKindWithOldVersion,
-        ObjectChange, WriteKind,
+        BackingPackageStore, DeleteKind, DeleteKindWithOldVersion, ObjectChange,
+        RuntimeObjectResolver, WriteKind,
     },
     transaction::{Argument, CallArg, ObjectArg},
     type_resolver::TypeTagResolver,
@@ -619,6 +619,16 @@ impl<'vm, 'state, 'a> ExecutionContext<'vm, 'state, 'a> {
                                 ));
                             }
                         }
+                        Some(Value::Receiving(_, _)) => {
+                            let msg = "Receiving argument not used within the transaction block";
+                            return Err(ExecutionError::new_with_source(
+                                    ExecutionErrorKind::UnusedValueWithoutDrop {
+                                        result_idx: i as u16,
+                                        secondary_idx: j as u16,
+                                    },
+                                    msg,
+                                ));
+                        }
                     }
                 }
             }
@@ -906,7 +916,7 @@ impl<'vm, 'state, 'a> TypeTagResolver for ExecutionContext<'vm, 'state, 'a> {
 pub(crate) fn new_session<'state, 'vm>(
     vm: &'vm MoveVM,
     linkage: LinkageView<'state>,
-    child_resolver: &'state dyn ChildObjectResolver,
+    child_resolver: &'state dyn RuntimeObjectResolver,
     input_objects: BTreeMap<ObjectID, Owner>,
     is_metered: bool,
     protocol_config: &ProtocolConfig,
@@ -1183,6 +1193,7 @@ fn load_object_arg<'vm, 'state>(
             /* imm override */ !mutable,
             id,
         ),
+        ObjectArg::Receiving((id, version, _)) => Ok(InputValue::new_receiving_object(id, version)),
     }
 }
 

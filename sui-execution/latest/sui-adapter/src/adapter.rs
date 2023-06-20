@@ -28,7 +28,7 @@ use sui_types::{
     error::{ExecutionErrorKind, SuiError},
     metrics::LimitsMetrics,
     object::Owner,
-    storage::ChildObjectResolver,
+    storage::RuntimeObjectResolver,
 };
 use sui_verifier::verifier::sui_verify_module_metered_check_timeout_only;
 
@@ -106,7 +106,7 @@ pub fn new_move_vm(
 }
 
 pub fn new_native_extensions<'r>(
-    child_resolver: &'r dyn ChildObjectResolver,
+    child_resolver: &'r dyn RuntimeObjectResolver,
     input_objects: BTreeMap<ObjectID, Owner>,
     is_metered: bool,
     protocol_config: &ProtocolConfig,

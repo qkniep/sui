@@ -14,6 +14,7 @@ use crate::messages_checkpoint::{
     VerifiedCheckpointContents,
 };
 use crate::move_package::MovePackage;
+use crate::object::Owner;
 use crate::transaction::{SenderSignedData, TransactionDataAPI, VerifiedTransaction};
 use crate::{
     base_types::{ObjectID, ObjectRef, SequenceNumber},
@@ -95,13 +96,29 @@ pub enum ObjectChange {
     Delete(DeleteKindWithOldVersion),
 }
 
-pub trait StorageView: Storage + ParentSync + ChildObjectResolver {}
-impl<T: Storage + ParentSync + ChildObjectResolver> StorageView for T {}
+pub trait StorageView: Storage + ParentSync + RuntimeObjectResolver {}
+impl<T: Storage + ParentSync + RuntimeObjectResolver> StorageView for T {}
 
 /// An abstraction of the (possibly distributed) store for objects. This
 /// API only allows for the retrieval of objects, not any state changes
-pub trait ChildObjectResolver {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>>;
+pub trait RuntimeObjectResolver {
+    /// `child` must have an `ObjectOwner` ownership equal to `owner`.
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>>;
+
+    /// Read a dynamic field object from the given parent. `child` must have an `ObjectOwner`
+    /// relationship with `parent`.
+    fn read_dynamic_field_object(
+        &self,
+        parent: &ObjectID,
+        child: &ObjectID,
+    ) -> SuiResult<Option<Object>> {
+        self.read_child_object(Owner::ObjectOwner((*parent).into()), child)
+    }
+    /// Read a sent object. `child` must have an `AddressOwner` ownership type with an owner of
+    /// `parent`.
+    fn read_sent_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
+        self.read_child_object(Owner::AddressOwner((*parent).into()), child)
+    }
 }
 
 /// An abstraction of the (possibly distributed) store for objects, and (soon) events and transactions
@@ -239,21 +256,21 @@ impl<S: ParentSync> ParentSync for &mut S {
     }
 }
 
-impl<S: ChildObjectResolver> ChildObjectResolver for std::sync::Arc<S> {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
-        ChildObjectResolver::read_child_object(self.as_ref(), parent, child)
+impl<S: RuntimeObjectResolver> RuntimeObjectResolver for std::sync::Arc<S> {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
+        RuntimeObjectResolver::read_child_object(self.as_ref(), owner, child)
     }
 }
 
-impl<S: ChildObjectResolver> ChildObjectResolver for &S {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
-        ChildObjectResolver::read_child_object(*self, parent, child)
+impl<S: RuntimeObjectResolver> RuntimeObjectResolver for &S {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
+        RuntimeObjectResolver::read_child_object(*self, owner, child)
     }
 }
 
-impl<S: ChildObjectResolver> ChildObjectResolver for &mut S {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
-        ChildObjectResolver::read_child_object(*self, parent, child)
+impl<S: RuntimeObjectResolver> RuntimeObjectResolver for &mut S {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
+        RuntimeObjectResolver::read_child_object(*self, owner, child)
     }
 }
 

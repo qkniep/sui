@@ -20,6 +20,7 @@ use base_types::ObjectID;
 pub use mysten_network::multiaddr;
 
 use crate::base_types::{RESOLVED_ASCII_STR, RESOLVED_UTF8_STR};
+use crate::transfer::RESOLVED_RECEIVING_STRUCT;
 use crate::{base_types::RESOLVED_STD_OPTION, id::RESOLVED_SUI_ID};
 
 #[macro_use]
@@ -65,6 +66,7 @@ pub mod sui_serde;
 pub mod sui_system_state;
 pub mod temporary_store;
 pub mod transaction;
+pub mod transfer;
 pub mod type_resolver;
 pub mod versioned;
 pub mod zk_login_authenticator;
@@ -195,10 +197,15 @@ pub fn is_primitive(
 
         S::StructInstantiation(idx, targs) => {
             let resolved_struct = resolve_struct(view, *idx);
-            // is option of a primitive
-            resolved_struct == RESOLVED_STD_OPTION
+            // option is a primitive
+            (resolved_struct == RESOLVED_STD_OPTION
                 && targs.len() == 1
-                && is_primitive(view, function_type_args, &targs[0])
+                && is_primitive(view, function_type_args, &targs[0])) ||
+                // `Receiving` struct in the `sui::transfer` module is also a primitive
+                (
+                    resolved_struct == RESOLVED_RECEIVING_STRUCT
+                    && targs.len() == 1
+                )
         }
 
         S::Vector(inner) => is_primitive(view, function_type_args, inner),

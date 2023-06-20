@@ -18,10 +18,10 @@ use sui_types::{
     error::VMMemoryLimitExceededSubStatusCode,
     metrics::LimitsMetrics,
     object::{Data, MoveObject, Owner},
-    storage::ChildObjectResolver,
+    storage::RuntimeObjectResolver,
 };
 pub(super) struct ChildObject {
-    pub(super) owner: ObjectID,
+    pub(super) owner: Owner,
     pub(super) ty: Type,
     pub(super) move_type: MoveObjectType,
     pub(super) value: GlobalValue,
@@ -37,8 +37,8 @@ pub(crate) struct ChildObjectEffect {
 }
 
 struct Inner<'a> {
-    // used for loading child objects
-    resolver: &'a dyn ChildObjectResolver,
+    // used for loading child and sent objects
+    resolver: &'a dyn RuntimeObjectResolver,
     // cached objects from the resolver. An object might be in this map but not in the store
     // if it's existence was queried, but the value was not used.
     cached_objects: BTreeMap<ObjectID, Option<MoveObject>>,
@@ -70,41 +70,37 @@ pub(crate) enum ObjectResult<V> {
     // object exists but type does not match. Should result in an abort
     MismatchedType,
     Loaded(V),
+    // TODO(tzakian): determine if we need this
+    // Object does not exist or unauthorized access to the object
+    // UnableToLoad,
 }
 
 impl<'a> Inner<'a> {
     fn get_or_fetch_object_from_store(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
     ) -> PartialVMResult<Option<&MoveObject>> {
         let cached_objects_count = self.cached_objects.len() as u64;
         if let btree_map::Entry::Vacant(e) = self.cached_objects.entry(child) {
             let child_opt = self
                 .resolver
-                .read_child_object(&parent, &child)
+                .read_child_object(owner, &child)
                 .map_err(|msg| {
                     PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(format!("{msg}"))
                 })?;
             let obj_opt = if let Some(object) = child_opt {
                 // guard against bugs in `read_child_object`: if it returns a child object such that
-                // C.parent != parent, we raise an invariant violation
-                match &object.owner {
-                    Owner::ObjectOwner(id) => {
-                        if ObjectID::from(*id) != parent {
-                            return Err(PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(
-                                format!("Bad owner for {child}. \
-                                Expected owner {parent} but found owner {id}")
-                            ))
-                        }
-                    }
-                    Owner::AddressOwner(_) | Owner::Immutable | Owner::Shared { .. } => {
-                        return Err(PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(
-                            format!("Bad owner for {child}. \
-                            Expected an id owner {parent} but found an address, immutable, or shared owner")
-                        ))
-                    }
-                };
+                // C.parent != parent, we raise an error
+                if object.owner != owner {
+                    return Err(PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(
+                        format!(
+                            "Bad owner for {child}. \
+                                    Expected owner {owner} but found owner {}",
+                            object.owner
+                        ),
+                    ));
+                }
                 match object.data {
                     Data::Package(_) => {
                         return Err(PartialVMError::new(StatusCode::STORAGE_ERROR).with_message(
@@ -146,13 +142,13 @@ impl<'a> Inner<'a> {
 
     fn fetch_object_impl(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
         child_ty: &Type,
         child_ty_layout: MoveTypeLayout,
         child_move_type: MoveObjectType,
     ) -> PartialVMResult<ObjectResult<(Type, MoveObjectType, GlobalValue)>> {
-        let obj = match self.get_or_fetch_object_from_store(parent, child)? {
+        let obj = match self.get_or_fetch_object_from_store(owner, child)? {
             None => {
                 return Ok(ObjectResult::Loaded((
                     child_ty.clone(),
@@ -193,7 +189,7 @@ impl<'a> Inner<'a> {
 
 impl<'a> ObjectStore<'a> {
     pub(super) fn new(
-        resolver: &'a dyn ChildObjectResolver,
+        resolver: &'a dyn RuntimeObjectResolver,
         is_metered: bool,
         constants: LocalProtocolConfig,
         metrics: Arc<LimitsMetrics>,
@@ -212,23 +208,19 @@ impl<'a> ObjectStore<'a> {
         }
     }
 
-    pub(super) fn object_exists(
-        &mut self,
-        parent: ObjectID,
-        child: ObjectID,
-    ) -> PartialVMResult<bool> {
+    pub(super) fn object_exists(&mut self, owner: Owner, child: ObjectID) -> PartialVMResult<bool> {
         if let Some(child_object) = self.store.get(&child) {
             return child_object.value.exists();
         }
         Ok(self
             .inner
-            .get_or_fetch_object_from_store(parent, child)?
+            .get_or_fetch_object_from_store(owner, child)?
             .is_some())
     }
 
     pub(super) fn object_exists_and_has_type(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
         child_move_type: &MoveObjectType,
     ) -> PartialVMResult<bool> {
@@ -238,14 +230,14 @@ impl<'a> ObjectStore<'a> {
         }
         Ok(self
             .inner
-            .get_or_fetch_object_from_store(parent, child)?
+            .get_or_fetch_object_from_store(owner, child)?
             .map(|move_obj| move_obj.type_() == child_move_type)
             .unwrap_or(false))
     }
 
     pub(super) fn get_or_fetch_object(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
         child_ty: &Type,
         child_layout: MoveTypeLayout,
@@ -255,7 +247,7 @@ impl<'a> ObjectStore<'a> {
         let child_object = match self.store.entry(child) {
             btree_map::Entry::Vacant(e) => {
                 let (ty, move_type, value) = match self.inner.fetch_object_impl(
-                    parent,
+                    owner,
                     child,
                     child_ty,
                     child_layout,
@@ -285,7 +277,7 @@ impl<'a> ObjectStore<'a> {
                 };
 
                 e.insert(ChildObject {
-                    owner: parent,
+                    owner,
                     ty,
                     move_type,
                     value,
@@ -311,7 +303,7 @@ impl<'a> ObjectStore<'a> {
         child_value: Value,
     ) -> PartialVMResult<()> {
         let mut child_object = ChildObject {
-            owner: parent,
+            owner: Owner::ObjectOwner(parent.into()),
             ty: child_ty.clone(),
             move_type: child_move_type,
             value: GlobalValue::none(),
@@ -381,13 +373,18 @@ impl<'a> ObjectStore<'a> {
                 } = child_object;
                 let loaded_version = loaded_versions.get(&id).copied();
                 let effect = value.into_effect()?;
-                let child_effect = ChildObjectEffect {
-                    owner,
-                    loaded_version,
-                    ty,
-                    effect,
-                };
-                Some((id, child_effect))
+                // TODO(tzakian) handle AddressOwner case
+                if let Owner::ObjectOwner(owner) = owner {
+                    let child_effect = ChildObjectEffect {
+                        owner: owner.into(),
+                        loaded_version,
+                        ty,
+                        effect,
+                    };
+                    Some((id, child_effect))
+                } else {
+                    None
+                }
             })
             .collect();
         (loaded_versions, child_object_effects)

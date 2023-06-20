@@ -24,14 +24,16 @@ use move_vm_types::{
 };
 use smallvec::smallvec;
 use std::collections::VecDeque;
-use sui_types::{base_types::MoveObjectType, dynamic_field::derive_dynamic_field_id};
+use sui_types::{
+    base_types::MoveObjectType, dynamic_field::derive_dynamic_field_id, object::Owner,
+};
 
 const E_KEY_DOES_NOT_EXIST: u64 = 1;
 const E_FIELD_TYPE_MISMATCH: u64 = 2;
 const E_BCS_SERIALIZATION_FAILURE: u64 = 3;
 
 macro_rules! get_or_fetch_object {
-    ($context:ident, $ty_args:ident, $parent:ident, $child_id:ident, $ty_cost_per_byte:expr) => {{
+    ($context:ident, $ty_args:ident, $parent:expr, $child_id:ident, $ty_cost_per_byte:expr) => {{
         let child_ty = $ty_args.pop().unwrap();
         native_charge_gas_early_exit!(
             $context,
@@ -288,7 +290,7 @@ pub fn borrow_child_object(
     let global_value_result = get_or_fetch_object!(
         context,
         ty_args,
-        parent,
+        Owner::ObjectOwner(parent),
         child_id,
         dynamic_field_borrow_child_object_cost_params
             .dynamic_field_borrow_child_object_type_cost_per_byte
@@ -356,7 +358,7 @@ pub fn remove_child_object(
     let global_value_result = get_or_fetch_object!(
         context,
         ty_args,
-        parent,
+        Owner::ObjectOwner(parent),
         child_id,
         dynamic_field_remove_child_object_cost_params
             .dynamic_field_remove_child_object_type_cost_per_byte
@@ -416,7 +418,7 @@ pub fn has_child_object(
     let child_id = pop_arg!(args, AccountAddress).into();
     let parent = pop_arg!(args, AccountAddress).into();
     let object_runtime: &mut ObjectRuntime = context.extensions_mut().get_mut();
-    let has_child = object_runtime.child_object_exists(parent, child_id)?;
+    let has_child = object_runtime.child_object_exists(Owner::ObjectOwner(parent), child_id)?;
     Ok(NativeResult::ok(
         context.gas_used(),
         smallvec![Value::bool(has_child)],
@@ -486,7 +488,7 @@ pub fn has_child_object_with_ty(
 
     let object_runtime: &mut ObjectRuntime = context.extensions_mut().get_mut();
     let has_child = object_runtime.child_object_exists_and_has_type(
-        parent,
+        Owner::ObjectOwner(parent),
         child_id,
         &MoveObjectType::from(tag),
     )?;
@@ -496,7 +498,7 @@ pub fn has_child_object_with_ty(
     ))
 }
 
-fn get_tag_and_layout(
+pub(crate) fn get_tag_and_layout(
     context: &NativeContext,
     ty: &Type,
 ) -> PartialVMResult<Option<(MoveTypeLayout, StructTag)>> {

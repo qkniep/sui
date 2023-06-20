@@ -33,7 +33,7 @@ use crate::{
     object::Owner,
     object::{Data, Object},
     storage::{
-        BackingPackageStore, ChildObjectResolver, DeleteKind, ObjectChange, ParentSync, Storage,
+        BackingPackageStore, DeleteKind, ObjectChange, ParentSync, RuntimeObjectResolver, Storage,
         WriteKind,
     },
     transaction::InputObjects,
@@ -140,7 +140,7 @@ where
 
 pub trait BackingStore:
     BackingPackageStore
-    + ChildObjectResolver
+    + RuntimeObjectResolver
     + GetModule<Error = SuiError, Item = CompiledModule>
     + ObjectStore
     + ParentSync
@@ -151,7 +151,7 @@ pub trait BackingStore:
 impl<T> BackingStore for T
 where
     T: BackingPackageStore,
-    T: ChildObjectResolver,
+    T: RuntimeObjectResolver,
     T: GetModule<Error = SuiError, Item = CompiledModule>,
     T: ObjectStore,
     T: ParentSync,
@@ -732,10 +732,12 @@ impl<'backing> TemporaryStore<'backing> {
                         panic!("Mutated object must exist in the store: ID = {:?}", id)
                     });
                     match &old_obj.owner {
-                        Owner::ObjectOwner(_parent) => {
+                        // ObjectOwner = dynamic field mutations
+                        // AddressOwner = received object
+                        Owner::ObjectOwner(_) | Owner::AddressOwner(_) => {
                             objs_to_authenticate.push(*id);
                         }
-                        Owner::AddressOwner(_) | Owner::Shared { .. } => {
+                        Owner::Shared { .. } => {
                             unreachable!("Should already be in authenticated_objs")
                         }
                         Owner::Immutable => {
@@ -765,10 +767,10 @@ impl<'backing> TemporaryStore<'backing> {
                     // get owner at beginning of tx
                     let old_obj = self.store.get_object(id)?.unwrap();
                     match &old_obj.owner {
-                        Owner::ObjectOwner(_) => {
+                        Owner::AddressOwner(_) | Owner::ObjectOwner(_) => {
                             objs_to_authenticate.push(*id);
                         }
-                        Owner::AddressOwner(_) | Owner::Shared { .. } => {
+                        Owner::Shared { .. } => {
                             unreachable!("Should already be in authenticated_objs")
                         }
                         Owner::Immutable => unreachable!("Immutable objects cannot be deleted"),
@@ -803,7 +805,7 @@ impl<'backing> TemporaryStore<'backing> {
                 continue;
             };
             let parent = match &old_obj.owner {
-                Owner::ObjectOwner(parent) => ObjectID::from(*parent),
+                Owner::ObjectOwner(parent) | Owner::AddressOwner(parent) => ObjectID::from(*parent),
                 owner => panic!(
                     "Unauthenticated root at {to_authenticate:?} with owner {owner:?}\n\
              Potentially covering objects in: {covered:#?}",
@@ -1542,15 +1544,15 @@ impl<'backing> TemporaryStore<'backing> {
     }
 }
 
-impl<'backing> ChildObjectResolver for TemporaryStore<'backing> {
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
+impl<'backing> RuntimeObjectResolver for TemporaryStore<'backing> {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
         // there should be no read after delete
         debug_assert!(self.deleted.get(child).is_none());
         let obj_opt = self.written.get(child).map(|(obj, _kind)| obj);
         if obj_opt.is_some() {
             Ok(obj_opt.cloned())
         } else {
-            self.store.read_child_object(parent, child)
+            self.store.read_child_object(owner, child)
         }
     }
 }

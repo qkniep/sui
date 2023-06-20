@@ -96,6 +96,8 @@ pub enum ObjectArg {
         initial_shared_version: SequenceNumber,
         mutable: bool,
     },
+    // A Move object that can be received in this transaction.
+    Receiving(ObjectRef),
 }
 
 fn type_tag_validity_check(
@@ -239,6 +241,19 @@ impl CallArg {
                     mutable,
                 }]
             }
+            // Receiving objects are not part of the input objects.
+            CallArg::Object(ObjectArg::Receiving(_)) => vec![],
+        }
+    }
+
+    fn receiving_objects(&self) -> Vec<ObjectRef> {
+        match self {
+            CallArg::Pure(_) => vec![],
+            CallArg::Object(o) => match o {
+                ObjectArg::ImmOrOwnedObject(_) => vec![],
+                ObjectArg::SharedObject { .. } => vec![],
+                ObjectArg::Receiving(obj_ref) => vec![*obj_ref],
+            },
         }
     }
 
@@ -323,7 +338,9 @@ impl ObjectArg {
 
     pub fn id(&self) -> ObjectID {
         match self {
-            ObjectArg::ImmOrOwnedObject((id, _, _)) | ObjectArg::SharedObject { id, .. } => *id,
+            ObjectArg::Receiving((id, _, _))
+            | ObjectArg::ImmOrOwnedObject((id, _, _))
+            | ObjectArg::SharedObject { id, .. } => *id,
         }
     }
 }
@@ -635,6 +652,21 @@ impl ProgrammableTransaction {
             .collect())
     }
 
+    fn receiving_objects(&self) -> UserInputResult<Vec<ObjectRef>> {
+        let ProgrammableTransaction { inputs, .. } = self;
+        let receiving_objects = inputs
+            .iter()
+            .flat_map(|arg| arg.receiving_objects())
+            .collect::<Vec<_>>();
+
+        // all objects being received must be unique
+        let mut used = HashSet::new();
+        if !receiving_objects.iter().all(|o| used.insert(o.0)) {
+            return Err(UserInputError::DuplicateObjectRefInput);
+        }
+        Ok(receiving_objects)
+    }
+
     fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         let ProgrammableTransaction { inputs, commands } = self;
         fp_ensure!(
@@ -657,7 +689,9 @@ impl ProgrammableTransaction {
         self.inputs
             .iter()
             .filter_map(|arg| match arg {
-                CallArg::Pure(_) | CallArg::Object(ObjectArg::ImmOrOwnedObject(_)) => None,
+                CallArg::Pure(_)
+                | CallArg::Object(ObjectArg::Receiving(_))
+                | CallArg::Object(ObjectArg::ImmOrOwnedObject(_)) => None,
                 CallArg::Object(ObjectArg::SharedObject {
                     id,
                     initial_shared_version,
@@ -866,6 +900,15 @@ impl TransactionKind {
             Self::ProgrammableTransaction(pt) => pt.move_calls(),
             _ => vec![],
         }
+    }
+
+    fn receiving_objects(&self) -> UserInputResult<Vec<ObjectRef>> {
+        Ok(match &self {
+            TransactionKind::ChangeEpoch(_)
+            | TransactionKind::Genesis(_)
+            | TransactionKind::ConsensusCommitPrologue(_) => vec![],
+            TransactionKind::ProgrammableTransaction(pt) => pt.receiving_objects()?,
+        })
     }
 
     /// Return the metadata of each of the input objects for the transaction.
@@ -1437,6 +1480,8 @@ pub trait TransactionDataAPI {
 
     fn input_objects(&self) -> UserInputResult<Vec<InputObjectKind>>;
 
+    fn receiving_objects(&self) -> UserInputResult<Vec<ObjectRef>>;
+
     fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult;
 
     fn validity_check_no_gas_check(&self, config: &ProtocolConfig) -> UserInputResult;
@@ -1534,6 +1579,10 @@ impl TransactionDataAPI for TransactionDataV1 {
             );
         }
         Ok(inputs)
+    }
+
+    fn receiving_objects(&self) -> UserInputResult<Vec<ObjectRef>> {
+        self.kind.receiving_objects()
     }
 
     fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {

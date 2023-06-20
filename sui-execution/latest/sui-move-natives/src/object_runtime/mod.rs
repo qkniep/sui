@@ -22,7 +22,7 @@ use sui_types::{
     error::{ExecutionError, ExecutionErrorKind, VMMemoryLimitExceededSubStatusCode},
     metrics::LimitsMetrics,
     object::{MoveObject, Owner},
-    storage::{ChildObjectResolver, DeleteKind, WriteKind},
+    storage::{DeleteKind, RuntimeObjectResolver, WriteKind},
     SUI_CLOCK_OBJECT_ID, SUI_SYSTEM_STATE_OBJECT_ID,
 };
 
@@ -151,7 +151,7 @@ impl TestInventories {
 
 impl<'a> ObjectRuntime<'a> {
     pub fn new(
-        object_resolver: &'a dyn ChildObjectResolver,
+        object_resolver: &'a dyn RuntimeObjectResolver,
         input_objects: BTreeMap<ObjectID, Owner>,
         is_metered: bool,
         protocol_config: &ProtocolConfig,
@@ -297,32 +297,32 @@ impl<'a> ObjectRuntime<'a> {
 
     pub(crate) fn child_object_exists(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
     ) -> PartialVMResult<bool> {
-        self.object_store.object_exists(parent, child)
+        self.object_store.object_exists(owner, child)
     }
 
     pub(crate) fn child_object_exists_and_has_type(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
         child_type: &MoveObjectType,
     ) -> PartialVMResult<bool> {
         self.object_store
-            .object_exists_and_has_type(parent, child, child_type)
+            .object_exists_and_has_type(owner, child, child_type)
     }
 
     pub(crate) fn get_or_fetch_child_object(
         &mut self,
-        parent: ObjectID,
+        owner: Owner,
         child: ObjectID,
         child_ty: &Type,
         child_layout: MoveTypeLayout,
         child_move_type: MoveObjectType,
     ) -> PartialVMResult<ObjectResult<&mut GlobalValue>> {
         let res = self.object_store.get_or_fetch_object(
-            parent,
+            owner,
             child,
             child_ty,
             child_layout,

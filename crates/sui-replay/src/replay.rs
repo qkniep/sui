@@ -49,7 +49,7 @@ use sui_types::gas::SuiGasStatus;
 use sui_types::metrics::LimitsMetrics;
 use sui_types::object::{Data, Object, Owner};
 use sui_types::storage::get_module_by_id;
-use sui_types::storage::{BackingPackageStore, ChildObjectResolver, ObjectStore, ParentSync};
+use sui_types::storage::{BackingPackageStore, ObjectStore, ParentSync, RuntimeObjectResolver};
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemState;
 use sui_types::temporary_store::InnerTemporaryStore;
 use sui_types::transaction::{
@@ -1584,37 +1584,32 @@ impl BackingPackageStore for LocalExec {
     }
 }
 
-impl ChildObjectResolver for LocalExec {
+impl RuntimeObjectResolver for LocalExec {
     /// This uses `get_object`, which does not download from the network
     /// Hence all objects must be in store already
-    fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
-        fn inner(
-            self_: &LocalExec,
-            parent: &ObjectID,
-            child: &ObjectID,
-        ) -> SuiResult<Option<Object>> {
+    fn read_child_object(&self, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
+        fn inner(self_: &LocalExec, owner: Owner, child: &ObjectID) -> SuiResult<Option<Object>> {
             let child_object = match self_.get_object(child)? {
                 None => return Ok(None),
                 Some(o) => o,
             };
-            let parent = *parent;
-            if child_object.owner != Owner::ObjectOwner(parent.into()) {
+            if child_object.owner != owner {
                 return Err(SuiError::InvalidChildObjectAccess {
                     object: *child,
-                    given_parent: parent,
+                    given_parent: owner.get_owner_address()?.into(),
                     actual_owner: child_object.owner,
                 });
             }
             Ok(Some(child_object))
         }
 
-        let res = inner(self, parent, child);
+        let res = inner(self, owner, child);
         self.exec_store_events
             .lock()
             .expect("Unable to lock events list")
             .push(
                 ExecutionStoreEvent::ChildObjectResolverStoreReadChildObject {
-                    parent: *parent,
+                    parent: owner.get_owner_address()?.into(),
                     child: *child,
                     result: res.clone(),
                 },

@@ -9,6 +9,10 @@ module sui::transfer {
     #[test_only]
     friend sui::test_scenario;
 
+    struct Receiving<phantom T: key> {
+        id: object::ID,
+        version: u64,
+    }
 
     /// Shared an object that was previously created. Shared objects must currently
     /// be constructed in the transaction they are created.
@@ -70,6 +74,17 @@ module sui::transfer {
         share_object_impl(obj)
     }
 
+    /// Given mutable (i.e., locked) access to the `parent` and a `Receiving`
+    /// object referencing an object owned by `parent` discharge the `Receiving` obligation
+    /// and return the corresponding owned object.
+    public fun receive<T: key>(parent: &mut object::UID, to_receive: Receiving<T>): T {
+        let Receiving {
+            id,
+            version: _,
+        } = to_receive;
+        receive_internal(object::uid_to_address(parent), id)
+    }
+
     public(friend) native fun freeze_object_impl<T: key>(obj: T);
 
     spec freeze_object_impl {
@@ -107,4 +122,6 @@ module sui::transfer {
         ensures [abstract] global<object::Ownership>(object::id(obj).bytes).owner == recipient;
         ensures [abstract] global<object::Ownership>(object::id(obj).bytes).status == prover::OWNED;
     }
+
+    native fun receive_internal<T: key>(parent: address, to_receive: object::ID): T;
 }

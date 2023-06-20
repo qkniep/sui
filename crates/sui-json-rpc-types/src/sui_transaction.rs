@@ -1530,6 +1530,13 @@ impl SuiCallArg {
                 initial_shared_version,
                 mutable,
             }),
+            // TODO(tzakian)
+            CallArg::Object(ObjectArg::Receiving(_obj_ref)) => std::todo!(
+                "Implement SuiCallArg::try_from for CallArg::Object(ObjectArg::Receiving(obj_ref))"
+            ),
+            // {
+            //     SuiCallArg::Object(SuiObjectArg::Receiving(SuiObjectRef::from(obj_ref)))
+            // }
         })
     }
 
@@ -1594,6 +1601,10 @@ pub enum SuiObjectArg {
         initial_shared_version: SequenceNumber,
         mutable: bool,
     },
+    // TODO(tzakian): uncomment this when we are ready to expose this to the RPC interface.
+    // A reference to a Move object that's going to be received in the transaction.
+    // #[serde(rename_all = "camelCase")]
+    // Receiving(SuiObjectRef),
 }
 
 #[serde_as]

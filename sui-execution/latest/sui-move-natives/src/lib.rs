@@ -45,6 +45,7 @@ use move_vm_types::{
 use std::sync::Arc;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{MOVE_STDLIB_ADDRESS, SUI_FRAMEWORK_ADDRESS, SUI_SYSTEM_ADDRESS};
+use transfer::TransferReceiveObjectInternalCostParams;
 
 mod address;
 mod crypto;
@@ -129,6 +130,9 @@ pub struct NativesCostTable {
 
     // hmac
     pub hmac_hmac_sha3_256_cost_params: HmacHmacSha3256CostParams,
+
+    // Receive object
+    pub transfer_receive_object_internal_cost_params: TransferReceiveObjectInternalCostParams,
 }
 
 impl NativesCostTable {
@@ -465,6 +469,11 @@ impl NativesCostTable {
                     .hmac_hmac_sha3_256_input_cost_per_block()
                     .into(),
             },
+            transfer_receive_object_internal_cost_params: TransferReceiveObjectInternalCostParams {
+                transfer_receive_object_internal_cost_base: 0.into(), // protocol_config
+                                                                      // .transfer_receive_object_cost_base()
+                                                                      // .into(),
+            },
         }
     }
 }
@@ -642,6 +651,11 @@ pub fn all_natives(silent: bool) -> NativeFunctionTable {
             make_native!(transfer::share_object),
         ),
         (
+            "transfer",
+            "receive_internal",
+            make_native!(transfer::receive_object_internal),
+        ),
+        (
             "tx_context",
             "derive_id",
             make_native!(tx_context::derive_id),
@@ -701,6 +715,18 @@ pub fn all_natives(silent: bool) -> NativeFunctionTable {
         .collect()
 }
 
+// ID { bytes: address }
+// Extract the first field of the struct to get the address bytes.
+pub fn get_receiver_object_id(object: Value) -> Result<Value, PartialVMError> {
+    get_nested_struct_field(object, &[0])
+}
+
+// UID { id: ID { bytes: address } }
+// Extract the first field of the struct 2 times to get the address bytes.
+pub fn get_uid_address(object: Value) -> Result<Value, PartialVMError> {
+    get_nested_struct_field(object, &[0, 0])
+}
+
 // Object { id: UID { id: ID { bytes: address } } .. }
 // Extract the first field of the struct 3 times to get the id bytes.
 pub fn get_object_id(object: Value) -> Result<Value, PartialVMError> {
@@ -711,6 +737,7 @@ pub fn get_object_id(object: Value) -> Result<Value, PartialVMError> {
 // is determined by `offsets`.
 pub fn get_nested_struct_field(mut v: Value, offsets: &[usize]) -> Result<Value, PartialVMError> {
     for offset in offsets {
+        // println!("v = {v:#?} offset = {offset}");
         v = get_nth_struct_field(v, *offset)?;
     }
     Ok(v)
