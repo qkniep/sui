@@ -118,6 +118,15 @@ pub struct AuthorityPerpetualTables {
     /// This could be non-zero due to bugs in earlier protocol versions.
     /// This number is the result of storage_fund_balance - sum(storage_rebate).
     pub(crate) expected_storage_fund_imbalance: DBMap<(), i64>,
+
+    /// For crash recovery -- if a node crashes during snapshot restoration with a partially
+    /// populated perpetual store, at restart, the presence of data in the column family will
+    /// otherwise be indistinguishable from a normal node restart with data. This flag is set
+    /// at the beginning of writing snapshot data, and unset at the end.
+    //
+    // TODO: should replace with write ahead log in the future in order to aoid having to start
+    // from the beginning in the case of crash during snapshot restore.
+    pub(crate) snapshot_restoration_in_progress: DBMap<(), bool>,
 }
 
 impl AuthorityPerpetualTables {
@@ -229,6 +238,19 @@ impl AuthorityPerpetualTables {
             .expect("Must have current epoch.")
             .epoch_start_state()
             .epoch())
+    }
+
+    pub fn get_is_snapshot_restoration_in_progress(&self) -> SuiResult<bool> {
+        Ok(self
+            .snapshot_restoration_in_progress
+            .get(&())?
+            .unwrap_or(false))
+    }
+
+    pub fn set_is_snapshot_restoration_in_progress(&self, in_progress: bool) -> SuiResult {
+        self.snapshot_restoration_in_progress
+            .insert(&(), &in_progress)?;
+        Ok(())
     }
 
     pub async fn set_epoch_start_configuration(

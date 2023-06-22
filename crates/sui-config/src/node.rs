@@ -13,6 +13,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,7 @@ use sui_keys::keypair_file::{read_authority_keypair_from_file, read_keypair_from
 use sui_protocol_config::SupportedProtocolVersions;
 use sui_storage::object_store::ObjectStoreConfig;
 use sui_types::base_types::{ObjectID, SuiAddress};
+use sui_types::committee::EpochId;
 use sui_types::crypto::AuthorityPublicKeyBytes;
 use sui_types::crypto::KeypairTraits;
 use sui_types::crypto::NetworkKeyPair;
@@ -132,6 +134,9 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub state_archive_config: StateArchiveConfig,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_restore_config: Option<SnapshotRestoreConfig>,
 }
 
 fn default_authority_store_pruning_config() -> AuthorityStorePruningConfig {
@@ -535,6 +540,16 @@ pub struct DBCheckpointConfig {
 pub struct StateArchiveConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_store_config: Option<ObjectStoreConfig>,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SnapshotRestoreConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_store_config: Option<ObjectStoreConfig>,
+    pub epoch: EpochId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_concurrency: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq)]

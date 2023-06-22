@@ -21,6 +21,7 @@ use futures::TryFutureExt;
 use mysten_common::sync::async_once_cell::AsyncOnceCell;
 use prometheus::Registry;
 use reqwest::Client;
+use sui_config::node::SnapshotRestoreConfig;
 use sui_core::authority::CHAIN_IDENTIFIER;
 use sui_core::consensus_adapter::LazyNarwhalClient;
 use sui_json_rpc::api::JsonRpcMetrics;
@@ -268,6 +269,18 @@ impl SuiNode {
             &config.db_path().join("store"),
             Some(perpetual_options.options),
         ));
+
+        if let Some(snapshot_restore_config) = config.snapshot_restore_config {
+            if perpetual_tables
+                .database_is_empty()
+                .expect("Database read should not fail at init.")
+                || perpetual_tables.get_is_snapshot_restoration_in_progress()?
+            {
+                self.restore_from_snapshot(snapshot_restore_config, perpetual_tables.clone())
+                    .await?;
+            }
+        }
+
         let is_genesis = perpetual_tables
             .database_is_empty()
             .expect("Database read should not fail at init.");
@@ -585,6 +598,116 @@ impl SuiNode {
         node_once_cell
             .set(node)
             .expect("Failed to set Arc<Node> in node_once_cell");
+        Ok(())
+    }
+
+    pub fn restore_from_snapshot(
+        &self,
+        snapshot_restore_config: SnapshotRestoreConfig,
+        perpetual_tables: Arc<AuthorityPerpetualTables>,
+        local_object_store_path: PathBuf,
+    ) {
+        // TODO should we move this to AuthorityState?
+        //
+        // TODO(william)
+        // * Create SnapshotReader
+        // * Create task and start syncing checkpoints
+        // * Call SnapshotReader::get_checkums to get the sha3 checksum and the
+        //      accumulator (for root state hash)
+        // * Create abort registration / abort handle pair
+        // * Set start flag in DB somewhere so that we know that we are in the middle of a snapshot restore,
+        //      and if we crash and there is data, we should rerun snapshot restore
+        // * Create task and call SnapshotReader::read(), passing in the sha3 checksum
+        //       and the abort registration for early termination
+        // * Join on checkpoint sync task
+        // * Retrieve committed root state hash
+        // * Verify that the root state hash of the snapshot matches the checkpoint
+        // * If not, early terminate SnapshotReader::read() task using abort handle and panic on inconsistent snapshot state
+        // * Join on the SnapshotReader::read() task. Panic on error
+        // * Do post-snapshot download db restoration (e.g. what do we need to do so that checkpoint executor starts from first
+        //    checkpoint of new epoch? Also what other tables in perpetual store need to be restored via derivation?)
+        // * Clear start flag in DB
+        //
+        // Outside todos
+        // 1. Fix gating for calling this function to also check for start flag in DB.
+        //      New logic: if snapshot restore config is not None && (db is empty || started flag is set)
+        //      Also add a todo here to switch to a write ahead log later
+        // 2. Fix state sync so that it can sync summaries up to a certain epoch, and sync full checkpoints only for checkpoints
+        //      starting at the epoch in question
+        // 3. Fix checkpoint executor so that it sets highest executed checkpoint watermark for the last checkpoint of the snapshot.
+        //      Note that this is not true, but we can verify that the results would be the same based on the root state hash.
+        //      Note that other persistent data from checkpoint execution, i.e. the effects, should not need to be present as we have
+        //      the protocol should not depend on effects from a previous epoch.
+        // 4. Testing
+        // 5. Add a start flag to some db so that we have ok crash recovery. Later we should replace with persistent write ahead log
+        //      so that we can also pickup where we left off after a crash rather than from the beginning
+
+        let epoch = snapshot_restore_config.epoch;
+        let mut snapshot_reader = StateSnapshotReaderV1::new(
+            snapshot_restore_config.epoch,
+            &snapshot_restore_config.object_store_config,
+            ObjectStoreConfig {
+                directory: Some(local_object_store_path),
+                ..Default::default()
+            },
+            usize::MAX,
+            snapshot_restore_config.download_concurrency,
+        )
+        .await?;
+
+        let checkpoint_sync_handle = tokio::task::spawn(async move {
+            // TODO ----------------
+            state_sync.sync_checkpoint_summaries(epoch).await?
+        });
+
+        let (sha3_digests, acc) = snapshot_reader.get_checkums().await?;
+
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+        perpetual_tables.set_is_snapshot_restoration_in_progress(true)?;
+
+        let read_handle = tokio::task::spawn(async move {
+            snapshot_reader
+                .read(&perpetual_tables, abort_registration)
+                .await?
+        });
+
+        checkpoint_sync_handle.await?;
+
+        // get appropriate checkpoint for root state hash here
+        // TODO ----------------
+        let checkpoint_summary = self
+            .checkpoint_store
+            .get_end_of_epoch_checkpoint_summary(epoch)
+            .await?;
+
+        let commitments = checkpoint_summary
+            .end_of_epoch_data
+            .unwrap_or_else(|| panic!("Expected end of epoch checkpoint summary to be returned"))
+            .checkpoint_commitments;
+        if commitments.is_empty() {
+            panic!(
+                "Formal snapshot verification not supported for epoch {} on this node",
+                epoch
+            );
+        }
+
+        if acc.digest() != commitment[0] {
+            abort_handle.abort();
+            panic!(
+                "Formal snapshot accumulator digest ({}) does not match root state digest commitment ({}) for epoch {}",
+                epoch,
+                acc.digest(),
+                commitment[0],
+            );
+        }
+        info!("Formal snapshot verification passed for epoch {}", epoch);
+        read_handle.await?;
+
+        // TODO ----------------
+        self.derive_perpetual_tables()?;
+
+        perpetual_tables.set_is_snapshot_restoration_in_progress(true)?;
         Ok(())
     }
 
