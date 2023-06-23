@@ -230,6 +230,7 @@ pub struct AuthorityMetrics {
     post_processing_total_events_emitted: IntCounter,
     post_processing_total_tx_indexed: IntCounter,
     post_processing_total_tx_had_event_processed: IntCounter,
+    post_processing_total_failures: IntCounter,
 
     pending_notify_read: IntGauge,
 
@@ -503,6 +504,12 @@ impl AuthorityMetrics {
             post_processing_total_tx_had_event_processed: register_int_counter_with_registry!(
                 "post_processing_total_tx_had_event_processed",
                 "Total number of txes finished event processing in post processing",
+                registry,
+            )
+            .unwrap(),
+            post_processing_total_failures: register_int_counter_with_registry!(
+                "post_processing_total_failures",
+                "Total number of failure in post processing",
                 registry,
             )
             .unwrap(),
@@ -1098,17 +1105,7 @@ impl AuthorityState {
             .map(|(_, ((id, seq, _), obj, _))| InputKey(*id, (!obj.is_package()).then_some(*seq)))
             .collect();
 
-        let events = inner_temporary_store.events.clone();
-
-        let loaded_child_objects = if self.is_fullnode(epoch_store) {
-            // We only care about this for full nodes
-            inner_temporary_store.loaded_child_objects.clone()
-        } else {
-            BTreeMap::new()
-        };
-
-        let tx_coins = self
-            .commit_certificate(inner_temporary_store, certificate, effects, epoch_store)
+        self.commit_certificate(inner_temporary_store, certificate, effects, epoch_store)
             .await?;
 
         // commit_certificate finished, the tx is fully committed to the store.
@@ -1123,19 +1120,6 @@ impl AuthorityState {
         // before the output objects are actually available.
         self.transaction_manager
             .notify_commit(&digest, output_keys, epoch_store);
-
-        // index certificate
-        let _ = self
-            .post_process_one_tx(
-                certificate,
-                effects,
-                &events,
-                epoch_store,
-                tx_coins,
-                loaded_child_objects,
-            )
-            .await
-            .tap_err(|e| error!("tx post processing failed: {e}"));
 
         // Update metrics.
         self.metrics.total_effects.inc();
@@ -1524,10 +1508,11 @@ impl AuthorityState {
         timestamp_ms: u64,
         epoch_store: &Arc<AuthorityPerEpochStore>,
         tx_coins: Option<TxCoins>,
+        written: &WrittenObjects,
         loaded_child_objects: BTreeMap<ObjectID, SequenceNumber>,
     ) -> SuiResult<u64> {
         let changes = self
-            .process_object_index(effects, epoch_store)
+            .process_object_index(digest, effects, epoch_store, written)
             .tap_err(|e| warn!(tx_digest=?digest, "Failed to process object index, index_tx is skipped: {e}"))?;
 
         indexes
@@ -1563,8 +1548,10 @@ impl AuthorityState {
 
     fn process_object_index(
         &self,
+        tx_digest: &TransactionDigest,
         effects: &TransactionEffects,
         epoch_store: &Arc<AuthorityPerEpochStore>,
+        written: &WrittenObjects,
     ) -> SuiResult<ObjectIndexChanges> {
         let modified_at_version = effects
             .modified_at_versions()
@@ -1576,8 +1563,11 @@ impl AuthorityState {
         let mut deleted_dynamic_fields = vec![];
         for (id, _, _) in effects.deleted().iter().chain(effects.wrapped()) {
             let old_version = modified_at_version.get(id).unwrap();
-
-            match self.get_owner_at_version(id, *old_version)? {
+            // When we process the index, the latest object hasn't been written yet so
+            // the old object must be present.
+            match self.get_owner_at_version(id, *old_version).unwrap_or_else(
+                |e| panic!("tx_digest={:?}, error processing object owner index, cannot find owner for object {:?} at version {:?}. Err: {:?}", tx_digest, id, old_version, e),
+            ) {
                 Owner::AddressOwner(addr) => deleted_owners.push((addr, *id)),
                 Owner::ObjectOwner(object_id) => {
                     deleted_dynamic_fields.push((ObjectID::from(object_id), *id))
@@ -1593,14 +1583,14 @@ impl AuthorityState {
             let id = &oref.0;
             // For mutated objects, retrieve old owner and delete old index if there is a owner change.
             if let WriteKind::Mutate = kind {
-                let Some(old_version) = modified_at_version.get(id) else{
-                        error!("Error processing object owner index for tx [{:?}], cannot find modified at version for mutated object [{id}].", effects.transaction_digest());
-                        continue;
-                    };
+                let Some(old_version) = modified_at_version.get(id) else {
+                    panic!("tx_digest={:?}, error processing object owner index, cannot find modified at version for mutated object [{id}].", tx_digest);
+                };
+                // When we process the index, the latest object hasn't been written yet so
+                // the old object must be present.
                 let Some(old_object) = self.database.get_object_by_key(id, *old_version)? else {
-                        error!("Error processing object owner index for tx [{:?}], cannot find object [{id}] at version [{old_version}].", effects.transaction_digest());
-                        continue;
-                    };
+                    panic!("tx_digest={:?}, error processing object owner index, cannot find owner for object {:?} at version {:?}", tx_digest, id, old_version);
+                };
                 if &old_object.owner != owner {
                     match old_object.owner {
                         Owner::AddressOwner(addr) => {
@@ -1617,11 +1607,13 @@ impl AuthorityState {
             match owner {
                 Owner::AddressOwner(addr) => {
                     // TODO: We can remove the object fetching after we added ObjectType to TransactionEffects
-                    let Some(o) = self.database.get_object_by_key(id, oref.1)? else{
-                        continue;
-                    };
+                    let new_object = written.get(id).unwrap_or_else(
+                        || panic!("tx_digest={:?}, error processing object owner index, written does not contain object {:?}", tx_digest, id)
+                    );
+                    assert_eq!(new_object.0.1, oref.1, "tx_digest={:?} error processing object owner index, object {:?} from written has mismatched verison. Actual: {}, expected: {}", tx_digest, id, new_object.0.1, oref.1);
 
-                    let type_ = o
+                    let type_ = new_object
+                        .1
                         .type_()
                         .map(|type_| ObjectType::Struct(type_.clone()))
                         .unwrap_or(ObjectType::Package);
@@ -1639,10 +1631,12 @@ impl AuthorityState {
                     ));
                 }
                 Owner::ObjectOwner(owner) => {
-                    let Some(o) = self.database.get_object_by_key(&oref.0, oref.1)? else{
-                        continue;
-                    };
-                    let Some(df_info) = self.try_create_dynamic_field_info(&o, epoch_store)? else{
+                    let new_object = written.get(id).unwrap_or_else(
+                        || panic!("tx_digest={:?}, error processing object owner index, written does not contain object {:?}", tx_digest, id)
+                    );
+                    assert_eq!(new_object.0.1, oref.1, "tx_digest={:?} error processing object owner index, object {:?} from written has mismatched verison. Actual: {}, expected: {}", tx_digest, id, new_object.0.1, oref.1);
+
+                    let Some(df_info) = self.try_create_dynamic_field_info(&new_object.1, epoch_store)? else{
                         // Skip indexing for non dynamic field objects.
                         continue;
                     };
@@ -1737,6 +1731,7 @@ impl AuthorityState {
         events: &TransactionEvents,
         epoch_store: &Arc<AuthorityPerEpochStore>,
         tx_coins: Option<TxCoins>,
+        written: &WrittenObjects,
         loaded_child_objects: BTreeMap<ObjectID, SequenceNumber>,
     ) -> SuiResult {
         if self.indexes.is_none() {
@@ -1757,6 +1752,7 @@ impl AuthorityState {
                     timestamp_ms,
                     epoch_store,
                     tx_coins,
+                    written,
                     loaded_child_objects,
                 )
                 .await
@@ -3098,10 +3094,6 @@ impl AuthorityState {
         Ok(checkpoints)
     }
 
-    pub async fn get_timestamp_ms(&self, digest: &TransactionDigest) -> SuiResult<Option<u64>> {
-        self.get_indexes()?.get_timestamp_ms(digest)
-    }
-
     pub fn query_events(
         &self,
         query: EventFilter,
@@ -3448,7 +3440,7 @@ impl AuthorityState {
         certificate: &VerifiedExecutableTransaction,
         effects: &TransactionEffects,
         epoch_store: &Arc<AuthorityPerEpochStore>,
-    ) -> SuiResult<Option<TxCoins>> {
+    ) -> SuiResult {
         let _metrics_guard = self.metrics.commit_certificate_latency.start_timer();
 
         let tx_digest = certificate.digest();
@@ -3465,9 +3457,33 @@ impl AuthorityState {
             None
         };
 
+        let loaded_child_objects = if self.is_fullnode(epoch_store) {
+            // We only care about this for full nodes
+            inner_temporary_store.loaded_child_objects.clone()
+        } else {
+            BTreeMap::new()
+        };
+
         // Returns coin objects for indexing for fullnode if indexing is enabled.
         let tx_coins =
             self.fullnode_only_get_tx_coins_for_indexing(&inner_temporary_store, epoch_store);
+
+        // index certificate
+        let _ = self
+            .post_process_one_tx(
+                certificate,
+                effects,
+                &inner_temporary_store.events,
+                epoch_store,
+                tx_coins,
+                &inner_temporary_store.written,
+                loaded_child_objects,
+            )
+            .await
+            .tap_err(|e| {
+                self.metrics.post_processing_total_failures.inc();
+                error!(?tx_digest, "tx post processing failed: {e}");
+            });
 
         // The insertion to epoch_store is not atomic with the insertion to the perpetual store. This is OK because
         // we insert to the epoch store first. And during lookups we always look up in the perpetual store first.
@@ -3499,7 +3515,7 @@ impl AuthorityState {
             .pending_notify_read
             .set(self.database.executed_effects_notify_read.num_pending() as i64);
 
-        Ok(tx_coins)
+        Ok(())
     }
 
     /// Get the TransactionEnvelope that currently locks the given object, if any.
