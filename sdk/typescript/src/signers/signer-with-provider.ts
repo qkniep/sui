@@ -16,6 +16,8 @@ import {
 	DryRunTransactionBlockResponse,
 	SuiTransactionBlockResponse,
 	SuiTransactionBlockResponseOptions,
+	BatchFaucetResponse,
+	BatchStatusFaucetResponse,
 } from '../types';
 import { IntentScope, messageWithIntent } from '../utils/intent';
 import { Signer } from './signer';
@@ -51,6 +53,22 @@ export abstract class SignerWithProvider implements Signer {
 	 */
 	async requestSuiFromFaucet(httpHeaders?: HttpHeaders): Promise<FaucetResponse> {
 		return this.provider.requestSuiFromFaucet(await this.getAddress(), httpHeaders);
+	}
+
+	/**
+	 * Request gas tokens from a faucet server and send to the signer
+	 * address. This newer function uses batched functionality and returns a 202 (ACCEPTED) status.
+	 * @param httpHeaders optional request headers
+	 */
+	async requestSuiFromFaucetV1(httpHeaders?: HttpHeaders): Promise<BatchFaucetResponse> {
+		return this.provider.requestSuiFromFaucetV1(await this.getAddress(), httpHeaders);
+	}
+
+	async getRequestStatus(
+		task_id: string,
+		httpHeaders?: HttpHeaders,
+	): Promise<BatchStatusFaucetResponse> {
+		return this.provider.getRequestStatus(task_id, httpHeaders);
 	}
 
 	constructor(provider: JsonRpcProvider) {
