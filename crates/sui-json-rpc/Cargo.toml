@@ -51,7 +51,6 @@ shared-crypto = { path = "../shared-crypto" }
 typed-store.workspace = true
 cached = "0.43.0"
 
-
 [dev-dependencies]
 sui-config = { path = "../sui-config" }
 sui-keys = { path = "../sui-keys" }
