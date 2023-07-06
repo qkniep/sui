@@ -48,7 +48,7 @@ struct Args {
     listen_address: Option<Multiaddr>,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     let args = Args::parse();
     let config = NodeConfig::load(&args.config_path).unwrap();
@@ -101,16 +101,17 @@ async fn main() {
                     .expect("Transaction exists")
                     .expect("Transaction exists");
 
-                let ground_truth_effects = sw_state
+                let tx_effects = sw_state
                     .store
                     .get_effects(&tx_digest.effects)
                     .expect("Transaction effects exist")
                     .expect("Transaction effects exist");
 
-                let full_tx = exec_worker::Transaction{tx, ground_truth_effects, checkpoint_seq};
                 ew_state
                     .execute_tx(
-                        &full_tx,
+                        &tx,
+                        &tx_effects,
+                        checkpoint_seq,
                         &protocol_config,
                         &move_vm,
                         &epoch_start_config.epoch_data(),
@@ -122,7 +123,7 @@ async fn main() {
 
             if summary.end_of_epoch_data.is_some() {
                 println!("END OF EPOCH at checkpoint {}", checkpoint_seq);
-                let latest_state = get_sui_system_state(&ew_state.memory_store.clone())
+                let latest_state = get_sui_system_state(&&ew_state.memory_store)
                     .expect("Read Sui System State object cannot fail");
                 let new_epoch_start_state = latest_state.into_epoch_start_state();
                 let next_epoch_committee = new_epoch_start_state.get_sui_committee();
