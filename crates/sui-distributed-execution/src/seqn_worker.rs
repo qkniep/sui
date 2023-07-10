@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 use std::cmp;
 
 use sui_config::NodeConfig;
@@ -46,7 +47,8 @@ impl SequenceWorkerState {
             &genesis_committee,
             None,
         ));
-        let perpetual_options = default_db_options().optimize_db_for_write_throughput(4);
+        //let perpetual_options = default_db_options().optimize_db_for_write_throughput(4);
+        let perpetual_options = default_db_options().optimize_for_point_lookup(8192);
         let store = AuthorityStore::open(
             &config.db_path().join("store"),
             Some(perpetual_options.options),
@@ -180,7 +182,7 @@ impl SequenceWorkerState {
         download: Option<u64>, 
         exeucte: Option<u64>,
         sw_sender: mpsc::Sender<SailfishMessage>,
-        mut ew_receiver: mpsc::Receiver<SailfishMessage>,
+        mut ew_receiver: Option<mpsc::Receiver<SailfishMessage>>,
     ){
         let genesis = Arc::new(config.genesis().expect("Could not load genesis"));
         let genesis_seq = genesis.checkpoint().into_summary_and_sequence().0;
@@ -215,6 +217,10 @@ impl SequenceWorkerState {
         
 
         if let Some(watermark) = exeucte {
+            // Start timer for TPS computation
+            let now = Instant::now();
+            let mut num_tx: usize = 0;
+
             for checkpoint_seq in genesis_seq..cmp::min(watermark, highest_synced_seq) {
                 let checkpoint_summary = self
                     .checkpoint_store
@@ -261,58 +267,69 @@ impl SequenceWorkerState {
                             checkpoint_seq,
                         }).await.expect("sending failed");
 
-                    if let TransactionKind::ChangeEpoch(_) = tx.data().transaction_data().kind() {
-                        // wait for epoch end message from execution worker
-                        println!(
-                            "SW waiting for epoch end message. Checkpoint_seq: {}",
-                            checkpoint_seq
-                        );
+                    num_tx += 1;
 
-                        let SailfishMessage::EpochEnd{new_epoch_start_state} = ew_receiver
-                            .recv()
-                            .await
-                            .expect("Receiving doesn't work")
-                        else {
-                            panic!("unexpected message")
-                        };
-                        let next_epoch_committee = new_epoch_start_state.get_sui_committee();
-                        let next_epoch = next_epoch_committee.epoch();
-                        let last_checkpoint = self
-                            .checkpoint_store
-                            .get_epoch_last_checkpoint(self.epoch_store.epoch())
-                            .expect("Error loading last checkpoint for current epoch")
-                            .expect("Could not load last checkpoint for current epoch");
-                        println!(
-                            "SW last checkpoint sequence number: {}",
-                            last_checkpoint.sequence_number(),
-                        );
-                        let epoch_start_configuration = EpochStartConfiguration::new(
-                            new_epoch_start_state,
-                            *last_checkpoint.digest(),
-                        );
-                        assert_eq!(self.epoch_store.epoch() + 1, next_epoch);
-                        self.epoch_store = self.epoch_store.new_at_next_epoch(
-                            config.protocol_public_key(),
-                            next_epoch_committee,
-                            epoch_start_configuration,
-                            self.store.clone(),
-                            &config.expensive_safety_check_config,
-                        );
-                        println!("SW new epoch store has epoch {}", self.epoch_store.epoch());
-                        let protocol_config = self.epoch_store.protocol_config();
-                        let epoch_start_config = self.epoch_store.epoch_start_config();
-                        let reference_gas_price = self.epoch_store.reference_gas_price();
-                        sw_sender
-                            .send(SailfishMessage::EpochStart{
-                                conf: protocol_config.clone(),
-                                data: epoch_start_config.epoch_data(),
-                                ref_gas_price: reference_gas_price,
-                            })
-                            .await
-                            .expect("Sending doesn't work");
+                    if let Some(ew_receiver) = ew_receiver.as_mut() {
+                        if let TransactionKind::ChangeEpoch(_) = tx.data().transaction_data().kind() {
+                            // wait for epoch end message from execution worker
+                            println!(
+                                "SW waiting for epoch end message. Checkpoint_seq: {}",
+                                checkpoint_seq
+                            );
+
+                            let SailfishMessage::EpochEnd{new_epoch_start_state} = ew_receiver
+                                .recv()
+                                .await
+                                .expect("Receiving doesn't work")
+                            else {
+                                panic!("unexpected message")
+                            };
+                            let next_epoch_committee = new_epoch_start_state.get_sui_committee();
+                            let next_epoch = next_epoch_committee.epoch();
+                            let last_checkpoint = self
+                                .checkpoint_store
+                                .get_epoch_last_checkpoint(self.epoch_store.epoch())
+                                .expect("Error loading last checkpoint for current epoch")
+                                .expect("Could not load last checkpoint for current epoch");
+                            println!(
+                                "SW last checkpoint sequence number: {}",
+                                last_checkpoint.sequence_number(),
+                            );
+                            let epoch_start_configuration = EpochStartConfiguration::new(
+                                new_epoch_start_state,
+                                *last_checkpoint.digest(),
+                            );
+                            assert_eq!(self.epoch_store.epoch() + 1, next_epoch);
+                            self.epoch_store = self.epoch_store.new_at_next_epoch(
+                                config.protocol_public_key(),
+                                next_epoch_committee,
+                                epoch_start_configuration,
+                                self.store.clone(),
+                                &config.expensive_safety_check_config,
+                            );
+                            println!("SW new epoch store has epoch {}", self.epoch_store.epoch());
+                            let protocol_config = self.epoch_store.protocol_config();
+                            let epoch_start_config = self.epoch_store.epoch_start_config();
+                            let reference_gas_price = self.epoch_store.reference_gas_price();
+                            sw_sender
+                                .send(SailfishMessage::EpochStart{
+                                    conf: protocol_config.clone(),
+                                    data: epoch_start_config.epoch_data(),
+                                    ref_gas_price: reference_gas_price,
+                                })
+                                .await
+                                .expect("Sending doesn't work");
+                        }
                     }
                 }
             }
+
+            // Print TPS
+            let elapsed = now.elapsed();
+            println!(
+                "Sequence worker TPS: {}",
+                1000.0 * num_tx as f64 / elapsed.as_millis() as f64,
+            );
         }
         println!("Sequence worker finished");
     }

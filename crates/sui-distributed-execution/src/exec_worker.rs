@@ -40,7 +40,7 @@ pub struct QueuesManager {
 }
 
 impl QueuesManager {
-    fn new(manager_sender: mpsc::Sender<Transaction>) -> QueuesManager {
+    pub fn new(manager_sender: mpsc::Sender<Transaction>) -> QueuesManager {
         QueuesManager { 
             tx_store: HashMap::new(), 
             obj_queues: HashMap::new(),
@@ -49,7 +49,7 @@ impl QueuesManager {
     }
 
     /// Enqueues a transaction on the manager
-    async fn queue_tx(&mut self, full_tx: Transaction) {
+    pub async fn queue_tx(&mut self, full_tx: Transaction) {
        
 		// Store tx
         let txid = *full_tx.tx.digest();
@@ -86,7 +86,7 @@ impl QueuesManager {
 	}
 
     /// Cleans up after a completed transaction
-	async fn clean_up(&mut self, completed_tx: &Transaction) {
+	pub async fn clean_up(&mut self, completed_tx: &Transaction) {
 
         // Get digest and RW set
         let txid = completed_tx.tx.digest();
@@ -402,7 +402,7 @@ impl<S: ObjectStore + WritableObjectStore + BackingPackageStore + ParentSync + C
         metrics: Arc<LimitsMetrics>,
         exec_watermark: u64,
         mut sw_receiver: mpsc::Receiver<SailfishMessage>,
-        ew_sender: mpsc::Sender<SailfishMessage>,
+        ew_sender: Option<mpsc::Sender<SailfishMessage>>,
     ){
         // Initialize channels
         let (manager_sender, mut manager_receiver) = mpsc::channel(MANAGER_CHANNEL_SIZE);
@@ -515,7 +515,11 @@ impl<S: ObjectStore + WritableObjectStore + BackingPackageStore + ParentSync + C
 
                 println!("EW END OF EPOCH at checkpoint {}", full_tx.checkpoint_seq);
                 (move_vm, protocol_config, epoch_data, reference_gas_price) = 
-                    self.process_epoch_change(&ew_sender, &mut sw_receiver).await;
+                    if let Some(ew_sender) = ew_sender.as_ref() {
+                        self.process_epoch_change(ew_sender, &mut sw_receiver).await
+                    } else {
+                        self.process_epoch_start(&mut sw_receiver).await
+                    };
 
                 epoch_change_tx = None;  // reset for next epoch
             }

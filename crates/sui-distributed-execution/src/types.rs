@@ -9,7 +9,7 @@ use sui_types::{
 };
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SailfishMessage {
     EpochStart{conf: ProtocolConfig, data: EpochData, ref_gas_price: u64},
     EpochEnd{new_epoch_start_state: EpochStartSystemState},
