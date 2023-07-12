@@ -554,6 +554,7 @@ impl<S: ObjectStore + WritableObjectStore + BackingPackageStore + ParentSync + C
     fn sanity_check(&self, qm: QueuesManager) {
         println!("EW running sanity check...");
 
+        // TODO: sanity check now sometimes failed because of multi-threaded out of order execution
         // obj_queues should be empty
         /*for (obj, queue) in qm.obj_queues {
             assert!(queue.is_empty(), "Queue for {} isn't empty", obj);
