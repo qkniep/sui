@@ -42,10 +42,10 @@ describe("Transaction Builders", () => {
   });
 
   it("SplitCoins + TransferObjects", async () => {
-    for (let i = 0; i < 1000; i++) {
+    for (let i = 0; i < 10_000; i++) {
       let results = [];
 
-      for (let shard = 0; shard < 10; shard++) {
+      for (let shard = 0; shard < SHARDS; shard++) {
         //const shard = Math.floor(Math.random() * SHARDS);
         const userIdx = USERS_PER_SHARD * shard +
           Math.floor(Math.random() * USERS_PER_SHARD);
@@ -57,6 +57,10 @@ describe("Transaction Builders", () => {
         const user = users[userIdx];
         const otherUser = users[otherUserIdx];
         const tx = new TransactionBlock();
+        for (let j = 0; j < 100; j++) {
+          const [coin] = tx.splitCoins(tx.gas, [tx.pure(1000)]);
+          tx.mergeCoins(tx.gas, [coin]);
+        }
         const [coin] = tx.splitCoins(tx.gas, [tx.pure(1000)]);
         tx.transferObjects([coin], tx.pure(otherUser.address));
         results.push(validateTransaction(user.signer, tx));

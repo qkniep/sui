@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use sui_types::{
     base_types::{ObjectID, ObjectRef, VersionNumber},
     error::{SuiError, SuiResult},
@@ -13,25 +11,24 @@ use move_bytecode_utils::module_cache::GetModule;
 use move_core_types::{language_storage::ModuleId, resolver::ModuleResolver};
 
 use crate::storage::WritableObjectStore;
+use dashmap::DashMap;
 
 #[derive(Debug)]
-pub struct MutexedMemoryBackedStore {
-    pub objects: Mutex<HashMap<ObjectID, (ObjectRef, Object)>>,
+pub struct DashMemoryBackedStore {
+    pub objects: DashMap<ObjectID, (ObjectRef, Object)>,
 }
 
-impl MutexedMemoryBackedStore {
-    pub fn new() -> MutexedMemoryBackedStore {
-        MutexedMemoryBackedStore {
-            objects: Mutex::new(HashMap::new()),
+impl DashMemoryBackedStore {
+    pub fn new() -> DashMemoryBackedStore {
+        DashMemoryBackedStore {
+            objects: DashMap::new(),
         }
     }
 }
 
-impl ObjectStore for MutexedMemoryBackedStore {
+impl ObjectStore for DashMemoryBackedStore {
     fn get_object(&self, object_id: &ObjectID) -> Result<Option<Object>, SuiError> {
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(object_id).map(|v| v.1.clone()))
     }
 
@@ -41,8 +38,6 @@ impl ObjectStore for MutexedMemoryBackedStore {
         version: VersionNumber,
     ) -> Result<Option<Object>, SuiError> {
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(object_id)
             .and_then(|obj| {
                 if obj.1.version() == version {
@@ -55,56 +50,45 @@ impl ObjectStore for MutexedMemoryBackedStore {
     }
 }
 
-impl WritableObjectStore for MutexedMemoryBackedStore {
+impl WritableObjectStore for DashMemoryBackedStore {
     fn insert(&self, k: ObjectID, v: (ObjectRef, Object)) -> Option<(ObjectRef, Object)> {
         self.objects
-            .lock()
-            .unwrap()
             .insert(k, v)
     }
 
     fn remove(&self, k: ObjectID) -> Option<(ObjectRef, Object)> {
-        self.objects
-            .lock()
-            .unwrap()
+        Some(self.objects
             .remove(&k)
+            .unwrap().1)
     }
 }
 
-impl ParentSync for MutexedMemoryBackedStore {
+impl ParentSync for DashMemoryBackedStore {
     fn get_latest_parent_entry_ref(&self, object_id: ObjectID) -> SuiResult<Option<ObjectRef>> {
         // println!("Parent: {:?}", object_id);
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(&object_id).map(|v| v.0))
     }
 }
 
-impl BackingPackageStore for MutexedMemoryBackedStore {
+impl BackingPackageStore for DashMemoryBackedStore {
     fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<Object>> {
         // println!("Package: {:?}", package_id);
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(package_id).map(|v| v.1.clone()))
     }
 }
 
-impl ChildObjectResolver for MutexedMemoryBackedStore {
+impl ChildObjectResolver for DashMemoryBackedStore {
     fn read_child_object(&self, _parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(child).map(|v| v.1.clone()))
     }
 }
 
-impl ObjectStore for &MutexedMemoryBackedStore {
+impl ObjectStore for &DashMemoryBackedStore {
     fn get_object(&self, object_id: &ObjectID) -> Result<Option<Object>, SuiError> {
         Ok(self.objects
-            .lock()
-            .unwrap()
             .get(object_id).map(|v| v.1.clone()))
     }
 
@@ -115,8 +99,6 @@ impl ObjectStore for &MutexedMemoryBackedStore {
     ) -> Result<Option<Object>, SuiError> {
         Ok(self
             .objects
-            .lock()
-            .unwrap()
             .get(object_id)
             .and_then(|obj| {
                 if obj.1.version() == version {
@@ -129,7 +111,7 @@ impl ObjectStore for &MutexedMemoryBackedStore {
     }
 }
 
-impl ModuleResolver for MutexedMemoryBackedStore {
+impl ModuleResolver for DashMemoryBackedStore {
     type Error = SuiError;
 
     fn get_module(&self, module_id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
@@ -144,7 +126,7 @@ impl ModuleResolver for MutexedMemoryBackedStore {
     }
 }
 
-impl GetModule for MutexedMemoryBackedStore {
+impl GetModule for DashMemoryBackedStore {
     type Error = SuiError;
     type Item = CompiledModule;
 

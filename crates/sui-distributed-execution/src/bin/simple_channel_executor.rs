@@ -5,6 +5,7 @@ use sui_config::{Config, NodeConfig};
 use sui_distributed_execution::{
     seqn_worker,
     exec_worker,
+    dash_store::DashMemoryBackedStore,
     mutex_store::MutexedMemoryBackedStore, types::{SailfishMessage, Transaction},
 };
 use sui_types::multiaddr::Multiaddr;
@@ -27,7 +28,7 @@ const GIT_REVISION: &str = {
 };
 const VERSION: &str = const_str::concat!(env!("CARGO_PKG_VERSION"), "-", GIT_REVISION);
 
-const DEFAULT_CHANNEL_SIZE:usize = 512;
+const DEFAULT_CHANNEL_SIZE:usize = 1024;
 
 
 #[derive(Parser)]
@@ -58,10 +59,10 @@ async fn main() {
     let mut sw_state = seqn_worker::SequenceWorkerState::new(&config).await;
     let metrics1 = sw_state.metrics.clone();
     let metrics2 = sw_state.metrics.clone();
-    let store1 = MutexedMemoryBackedStore::new(); // use the mutexed store for concurrency control
+    let store1 = DashMemoryBackedStore::new(); // use the mutexed store for concurrency control
     let mut ew_state1 = exec_worker::ExecutionWorkerState::new(store1);
     ew_state1.init_store(&genesis);
-    let store2 = MutexedMemoryBackedStore::new(); // use the mutexed store for concurrency control
+    let store2 = DashMemoryBackedStore::new(); // use the mutexed store for concurrency control
     let mut ew_state2 = exec_worker::ExecutionWorkerState::new(store2);
     ew_state2.init_store(&genesis);
 
