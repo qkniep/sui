@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use sui_distributed_execution::network_agents::*;
 
-const FILE_PATH:&str = "/Users/tonyzhang/Documents/UMich2023su/sui.nosync/crates/sui-distributed-execution/src/configs/config.json";
+const FILE_PATH:&str = "./crates/sui-distributed-execution/src/configs/config.json";
 
 #[derive(Parser)]
 #[clap(rename_all = "kebab-case")]
