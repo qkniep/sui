@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
-    base_types::ObjectID,
+    base_types::{ObjectID, ObjectRef},
+    digests::TransactionDigest,
     epoch_data::EpochData,
     messages::{InputObjectKind, VerifiedTransaction, TransactionKind, TransactionDataAPI},
+    object::Object,
     sui_system_state::epoch_start_sui_system_state::EpochStartSystemState,
     effects::TransactionEffects,
 };
@@ -11,9 +13,17 @@ use sui_types::{
 
 #[derive(Debug)]
 pub enum SailfishMessage {
-    EpochStart{conf: ProtocolConfig, data: EpochData, ref_gas_price: u64},
-    EpochEnd{new_epoch_start_state: EpochStartSystemState},
-    Transaction{tx: VerifiedTransaction, tx_effects: TransactionEffects, checkpoint_seq: u64}
+    // Sequencing Worker <-> Execution Worker
+    EpochStart { conf: ProtocolConfig, data: EpochData, ref_gas_price: u64 },
+    EpochEnd { new_epoch_start_state: EpochStartSystemState },
+    ProposeExec(Transaction),
+
+    // Execution Worker <-> Execution Worker
+    LockedExec { tx: TransactionDigest, objects: Vec<(ObjectRef, Object)> },
+
+    // Execution Worker <-> Storage Engine
+    StateUpdate(TransactionEffects),
+    Checkpointed(u64),
 }
 
 
@@ -26,13 +36,13 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn is_epoch_change(&self) -> bool {
-        if let TransactionKind::ChangeEpoch(_) = self.tx.data().transaction_data().kind() {
-            return true;
+        match self.tx.data().transaction_data().kind() {
+            TransactionKind::ChangeEpoch(_) => true,
+            _ => false,
         }
-        return false;
     }
 
-    /// Returns the read set of a transction
+    /// Returns the read set of a transction.
     /// Specifically, this is the set of input objects to the transaction. It excludes 
     /// child objects that are determined at runtime, but includes all owned objects inputs
     /// that must have their version numbers bumped.
@@ -59,7 +69,6 @@ impl Transaction {
     /// known a-priori before execution
     /// Returns the write set of a transction
     pub fn get_write_set(&self) -> HashSet<ObjectID> {
-
         let mut write_set: HashSet<ObjectID> = HashSet::new();
 
         let TransactionEffects::V1(tx_effects) = &self.ground_truth_effects;

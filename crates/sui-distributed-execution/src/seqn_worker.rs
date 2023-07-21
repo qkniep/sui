@@ -254,12 +254,14 @@ impl SequenceWorkerState {
                         .expect("Transaction effects exist")
                         .expect("Transaction effects exist");
 
+                    let full_tx = Transaction {
+                        tx: tx.clone(),
+                        ground_truth_effects: tx_effects.clone(),
+                        checkpoint_seq,
+                    };
+
                     sw_sender
-                        .send(SailfishMessage::Transaction{
-                            tx: tx.clone(),
-                            tx_effects: tx_effects.clone(),
-                            checkpoint_seq,
-                        }).await.expect("sending failed");
+                        .send(SailfishMessage::ProposeExec(full_tx)).await.expect("sending failed");
 
                     if let TransactionKind::ChangeEpoch(_) = tx.data().transaction_data().kind() {
                         // wait for epoch end message from execution worker
