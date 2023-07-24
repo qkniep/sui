@@ -19,7 +19,8 @@ pub enum SailfishMessage {
     ProposeExec(Transaction),
 
     // Execution Worker <-> Execution Worker
-    LockedExec { tx: TransactionDigest, objects: Vec<(ObjectRef, Object)> },
+    //LockedExec { tx: TransactionDigest, objects: Vec<(ObjectRef, Object)> },
+    LockedExec { tx: Transaction, objects: Vec<Option<Object>> },
 
     // Execution Worker <-> Storage Engine
     StateUpdate(TransactionEffects),
