@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashSet;
 use std::cmp;
+use std::sync::Arc;
 
 use sui_config::NodeConfig;
 use prometheus::Registry;
@@ -179,7 +180,7 @@ impl SequenceWorkerState {
         config: NodeConfig, 
         download: Option<u64>, 
         exeucte: Option<u64>,
-        sw_sender: mpsc::Sender<SailfishMessage>,
+        sw_senders: Vec<mpsc::Sender<SailfishMessage>>,
         mut ew_receiver: mpsc::Receiver<SailfishMessage>,
     ){
         let genesis = Arc::new(config.genesis().expect("Could not load genesis"));
@@ -204,15 +205,16 @@ impl SequenceWorkerState {
         }
 
         // Epoch Start
-        sw_sender
-            .send(SailfishMessage::EpochStart{
-                conf: protocol_config.clone(),
-                data: epoch_start_config.epoch_data(),
-                ref_gas_price: reference_gas_price,
-            })
-            .await
-            .expect("Sending doesn't work");
-        
+        for sw_sender in &sw_senders {
+            sw_sender
+                .send(SailfishMessage::EpochStart{
+                    conf: protocol_config.clone(),
+                    data: epoch_start_config.epoch_data(),
+                    ref_gas_price: reference_gas_price,
+                })
+                .await
+                .expect("Sending doesn't work");
+        }
 
         if let Some(watermark) = exeucte {
             for checkpoint_seq in genesis_seq..cmp::min(watermark, highest_synced_seq) {
@@ -233,14 +235,6 @@ impl SequenceWorkerState {
                     .expect("Contents must exist")
                     .expect("Contents must exist");
 
-                // if contents.size() > 1 {
-                //     println!(
-                //         "Checkpoint {} has {} transactions",
-                //         checkpoint_seq,
-                //         contents.size()
-                //     );
-                // }
-
                 for tx_digest in contents.iter() {
                     let tx = self
                         .store
@@ -260,8 +254,14 @@ impl SequenceWorkerState {
                         checkpoint_seq,
                     };
 
-                    sw_sender
-                        .send(SailfishMessage::ProposeExec(full_tx)).await.expect("sending failed");
+                    let receivers: HashSet<_> = full_tx.get_write_set().into_iter().map(|obj| obj[0] % sw_senders.len() as u8).collect();
+
+                    for (i, sw_sender) in sw_senders.iter().enumerate() {
+                        if receivers.contains(&(i as u8)) {
+                            sw_sender
+                                .send(SailfishMessage::ProposeExec(full_tx.clone())).await.expect("sending failed");
+                        }
+                    }
 
                     if let TransactionKind::ChangeEpoch(_) = tx.data().transaction_data().kind() {
                         // wait for epoch end message from execution worker
@@ -304,14 +304,16 @@ impl SequenceWorkerState {
                         let protocol_config = self.epoch_store.protocol_config();
                         let epoch_start_config = self.epoch_store.epoch_start_config();
                         let reference_gas_price = self.epoch_store.reference_gas_price();
-                        sw_sender
-                            .send(SailfishMessage::EpochStart{
-                                conf: protocol_config.clone(),
-                                data: epoch_start_config.epoch_data(),
-                                ref_gas_price: reference_gas_price,
-                            })
-                            .await
-                            .expect("Sending doesn't work");
+                        for sw_sender in &sw_senders {
+                            sw_sender
+                                .send(SailfishMessage::EpochStart{
+                                    conf: protocol_config.clone(),
+                                    data: epoch_start_config.epoch_data(),
+                                    ref_gas_price: reference_gas_price,
+                                })
+                                .await
+                                .expect("Sending doesn't work");
+                        }
                     }
                 }
             }
