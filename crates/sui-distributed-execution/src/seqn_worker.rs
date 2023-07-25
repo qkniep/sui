@@ -224,7 +224,7 @@ impl SequenceWorkerState {
                     .expect("Cannot get checkpoint")
                     .expect("Checkpoint is None");
 
-                if checkpoint_seq % 10000 == 0 {
+                if checkpoint_seq % 10_000 == 0 {
                     println!("SW sending checkpoint {}", checkpoint_seq);
                 }
 
@@ -257,7 +257,7 @@ impl SequenceWorkerState {
                     let receivers: HashSet<_> = if full_tx.is_epoch_change() {
                         (0..sw_senders.len() as u8).collect()
                     } else {
-                        full_tx.get_write_set().into_iter().map(|obj| obj[0] % sw_senders.len() as u8).collect()
+                        full_tx.get_read_write_set().into_iter().map(|obj| obj[0] % sw_senders.len() as u8).collect()
                     };
                     for ew in receivers {
                         sw_senders[ew as usize].send(SailfishMessage::ProposeExec(full_tx.clone())).await.expect("sending failed");
