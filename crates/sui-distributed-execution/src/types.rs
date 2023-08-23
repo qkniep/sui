@@ -1,13 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap, BTreeMap};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::{
-    base_types::{ObjectID, ObjectRef},
+    base_types::{ObjectID, ObjectRef, SequenceNumber},
     digests::TransactionDigest,
     epoch_data::EpochData,
     messages::{InputObjectKind, VerifiedTransaction, TransactionKind, TransactionDataAPI},
     object::Object,
     sui_system_state::epoch_start_sui_system_state::EpochStartSystemState,
-    effects::TransactionEffects,
+    effects::TransactionEffects, storage::{DeleteKind, WriteKind},
 };
 
 
@@ -20,7 +20,9 @@ pub enum SailfishMessage {
 
     // Execution Worker <-> Execution Worker
     //LockedExec { tx: TransactionDigest, objects: Vec<(ObjectRef, Object)> },
-    LockedExec { tx: Transaction, objects: Vec<Option<Object>> },
+    LockedExec { txid: TransactionDigest, objects: Vec<Option<(ObjectRef, Object)>>, child_objects: Vec<Option<(ObjectRef, Object)>> },
+    MissingObjects { txid: TransactionDigest, ew: u8, missing_objects: HashSet<ObjectID> },
+    TxResults { txid: TransactionDigest, deleted: BTreeMap<ObjectID, (SequenceNumber, DeleteKind)>, written: BTreeMap<ObjectID, (ObjectRef, Object, WriteKind)> },
 
     // Execution Worker <-> Storage Engine
     StateUpdate(TransactionEffects),
@@ -32,6 +34,7 @@ pub enum SailfishMessage {
 pub struct Transaction {
     pub tx: VerifiedTransaction,
     pub ground_truth_effects: TransactionEffects,  // full effects of tx, as ground truth exec result
+    pub child_inputs: Vec<ObjectID>, // TODO: mark mutable
     pub checkpoint_seq: u64,
 }
 
@@ -52,7 +55,7 @@ impl Transaction {
         let input_object_kinds = tx_data
             .input_objects()
             .expect("Cannot get input object kinds");
-    
+
         let mut read_set = HashSet::new();
         for kind in &input_object_kinds {
             match kind {
@@ -63,10 +66,22 @@ impl Transaction {
                 }
             };
         }
+
+        for (gas_obj_id, _, _) in tx_data.gas().iter() {
+            // skip genesis gas objects
+            if *gas_obj_id != ObjectID::from_single_byte(0) {
+                read_set.insert(*gas_obj_id);
+            }
+        }
+
+        for (&package_obj_id, _, _) in tx_data.move_calls() {
+            read_set.insert(package_obj_id);
+        }
+
         return read_set;
     }
 
-    /// TODO: This makes use of ground_truth_effects, which is illegal;
+    /// TODO: This makes use of ground_truth_effects, which is illegal for validators;
     /// it is not something that is known a-priori before execution.
     /// Returns the write set of a transction.
     pub fn get_write_set(&self) -> HashSet<ObjectID> {
@@ -110,4 +125,7 @@ impl Transaction {
 pub struct TransactionWithResults {
     pub full_tx: Transaction,
     pub tx_effects: TransactionEffects,            // determined after execution
+    pub deleted: BTreeMap<ObjectID, (SequenceNumber, DeleteKind)>,
+    pub written: BTreeMap<ObjectID, (ObjectRef, Object, WriteKind)>,
+    pub missing_objs: HashSet<ObjectID>,
 }

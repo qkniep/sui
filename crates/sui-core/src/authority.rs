@@ -4089,9 +4089,9 @@ impl NodeStateDump {
         // Objects and packages read at runtime
         // Some packages may be fetched at runtime and wont show up in input objects
         let mut runtime_reads = Vec::new();
-        for obj in inner_temporary_store.runtime_read_objects.values() {
+        /*for obj in inner_temporary_store.runtime_read_objects.values() {
             runtime_reads.push(obj.clone());
-        }
+        }*/
 
         // All other input objects should already be in `inner_temporary_store.objects`
 

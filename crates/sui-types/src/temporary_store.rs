@@ -49,13 +49,14 @@ pub struct InnerTemporaryStore {
     pub objects: ObjectMap,
     pub mutable_inputs: Vec<ObjectRef>,
     pub written: WrittenObjects,
+    pub tmp_objects: HashSet<ObjectID>,
     // deleted or wrapped or unwrap-then-delete
     pub deleted: BTreeMap<ObjectID, (SequenceNumber, DeleteKind)>,
     pub loaded_child_objects: BTreeMap<ObjectID, SequenceNumber>,
     pub events: TransactionEvents,
     pub max_binary_format_version: u32,
     pub no_extraneous_module_bytes: bool,
-    pub runtime_read_objects: BTreeMap<ObjectID, Object>,
+    pub runtime_read_objects: HashSet<ObjectID>,
 }
 
 impl InnerTemporaryStore {
@@ -151,6 +152,7 @@ pub struct TemporaryStore<S> {
     // It's critical that we always call write_object to update `written`, instead of writing
     // into written directly.
     written: BTreeMap<ObjectID, (Object, WriteKind)>, // Objects written
+    tmp_objects: HashSet<ObjectID>, // Objects written at some point during Tx execution
     /// Objects actively deleted.
     deleted: BTreeMap<ObjectID, (SequenceNumber, DeleteKind)>,
     /// Child objects loaded during dynamic field opers
@@ -163,7 +165,7 @@ pub struct TemporaryStore<S> {
     protocol_config: ProtocolConfig,
 
     // Every object that was read from store during exec
-    runtime_read_objects: RwLock<BTreeMap<ObjectID, Object>>,
+    runtime_read_objects: RwLock<HashSet<ObjectID>>,
 }
 
 impl<S> TemporaryStore<S> {
@@ -185,13 +187,14 @@ impl<S> TemporaryStore<S> {
             lamport_timestamp,
             mutable_input_refs: mutable_inputs,
             written: BTreeMap::new(),
+            tmp_objects: HashSet::new(),
             deleted: BTreeMap::new(),
             events: Vec::new(),
             gas_charged: None,
             storage_rebate_rate: protocol_config.storage_rebate_rate(),
             protocol_config: protocol_config.clone(),
             loaded_child_objects: BTreeMap::new(),
-            runtime_read_objects: RwLock::new(BTreeMap::new()),
+            runtime_read_objects: RwLock::new(HashSet::new()),
         }
     }
 
@@ -217,13 +220,14 @@ impl<S> TemporaryStore<S> {
             lamport_timestamp,
             mutable_input_refs: mutable_inputs,
             written: BTreeMap::new(),
+            tmp_objects: HashSet::new(),
             deleted: BTreeMap::new(),
             events: Vec::new(),
             gas_charged: None,
             storage_rebate_rate: protocol_config.storage_rebate_rate(),
             protocol_config: protocol_config.clone(),
             loaded_child_objects: BTreeMap::new(),
-            runtime_read_objects: RwLock::new(BTreeMap::new()),
+            runtime_read_objects: RwLock::new(HashSet::new()),
         }
     }
 
@@ -291,12 +295,13 @@ impl<S> TemporaryStore<S> {
             objects: self.input_objects,
             mutable_inputs: self.mutable_input_refs,
             written,
+            tmp_objects: self.tmp_objects,
             deleted,
             events: TransactionEvents { data: self.events },
             max_binary_format_version: self.protocol_config.move_binary_format_version(),
             loaded_child_objects: self.loaded_child_objects,
             no_extraneous_module_bytes: self.protocol_config.no_extraneous_module_bytes(),
-            runtime_read_objects: self.runtime_read_objects.read().clone(),
+            runtime_read_objects: self.runtime_read_objects.into_inner(),
         }
     }
 
@@ -480,6 +485,9 @@ impl<S> TemporaryStore<S> {
         // The adapter is not very disciplined at filling in the correct
         // previous transaction digest, so we ensure it is correct here.
         object.previous_transaction = self.tx_digest;
+        if kind == WriteKind::Create || kind == WriteKind::Unwrap {
+            self.tmp_objects.insert(object.id());
+        }
         self.written.insert(object.id(), (object, kind));
     }
 
@@ -567,6 +575,7 @@ impl<S> TemporaryStore<S> {
     }
 
     pub fn read_object(&self, id: &ObjectID) -> Option<&Object> {
+        self.runtime_read_objects.write().insert(*id);
         // there should be no read after delete
         debug_assert!(self.deleted.get(id).is_none());
         self.written
@@ -1463,10 +1472,11 @@ impl<S: ChildObjectResolver> ChildObjectResolver for TemporaryStore<S> {
     fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
         // there should be no read after delete
         debug_assert!(self.deleted.get(child).is_none());
-        let obj_opt = self.written.get(child).map(|(obj, _kind)| obj);
-        if obj_opt.is_some() {
-            Ok(obj_opt.cloned())
+        if let Some((obj, kind)) = self.written.get(child) {
+            self.runtime_read_objects.write().insert(*child);
+            Ok(Some(obj.clone()))
         } else {
+            self.runtime_read_objects.write().insert(*child);
             self.store.read_child_object(parent, child)
         }
     }
@@ -1501,14 +1511,8 @@ impl<S: ChildObjectResolver> Storage for TemporaryStore<S> {
 
 impl<S: BackingPackageStore> BackingPackageStore for TemporaryStore<S> {
     fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<Object>> {
-        self.store.get_package_object(package_id).map(|obj| {
-            // Track object but leave unchanged
-            if let Some(v) = obj.clone() {
-                // Can this lock ever block execution?
-                self.runtime_read_objects.write().insert(*package_id, v);
-            }
-            obj
-        })
+        self.runtime_read_objects.write().insert(*package_id);
+        self.store.get_package_object(package_id)
     }
 }
 
@@ -1586,6 +1590,7 @@ impl<S> ResourceResolver for TemporaryStore<S> {
 
 impl<S: ParentSync> ParentSync for TemporaryStore<S> {
     fn get_latest_parent_entry_ref(&self, object_id: ObjectID) -> SuiResult<Option<ObjectRef>> {
+        self.runtime_read_objects.write().insert(object_id);
         self.store.get_latest_parent_entry_ref(object_id)
     }
 }
@@ -1596,6 +1601,7 @@ impl<S: GetModule<Error = SuiError, Item = CompiledModule>> GetModule for Tempor
 
     fn get_module_by_id(&self, module_id: &ModuleId) -> Result<Option<Self::Item>, Self::Error> {
         let package_id = &ObjectID::from(*module_id.address());
+        self.runtime_read_objects.write().insert(*package_id);
         if let Some((obj, _)) = self.written.get(package_id) {
             Ok(Some(
                 obj.data

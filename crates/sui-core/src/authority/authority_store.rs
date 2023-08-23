@@ -937,6 +937,7 @@ impl AuthorityStore {
             objects,
             mutable_inputs: active_inputs,
             written,
+            tmp_objects: _,
             deleted,
             events,
             max_binary_format_version: _,
